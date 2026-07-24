@@ -10,6 +10,30 @@ struct Params {
   blend: f32, _p0: f32, _p1: f32, _p2: f32,
 };`;
 
+// 流速 = speed·∇⊥θ（位相勾配の直交）。位相勾配は回転解でほぼ時間不変＝チラつかない。
+// Im(ψ) を直接使うと CGL 振動でベクトルが毎フレーム反転しチカチカするので使わない。
+// ∇θ = (Re·∇Im − Im·∇Re)/|ψ|²（位相の巻き戻し不要）。芯付近(|ψ|→0)は上限クランプ。
+// 注: この関数を使う各シェーダーは `psi: array<vec2<f32>>` をバインドしていること。
+const FLOW_VEL = `
+fn psiAt(x: i32, y: i32, L: i32) -> vec2<f32> {
+  return psi[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
+}
+fn flowVel(x: i32, y: i32, L: i32, speed: f32) -> vec2<f32> {
+  let c = psiAt(x, y, L);
+  let m2 = c.x * c.x + c.y * c.y + 1e-4;
+  let px = psiAt(x + 1, y, L); let mx = psiAt(x - 1, y, L);
+  let py = psiAt(x, y + 1, L); let my = psiAt(x, y - 1, L);
+  let dRedx = 0.5 * (px.x - mx.x); let dImdx = 0.5 * (px.y - mx.y);
+  let dRedy = 0.5 * (py.x - my.x); let dImdy = 0.5 * (py.y - my.y);
+  let gThx = (c.x * dImdx - c.y * dRedx) / m2;
+  let gThy = (c.x * dImdy - c.y * dRedy) / m2;
+  var v = speed * vec2<f32>(gThy, -gThx);
+  let mag = length(v);
+  let vmax = 1.5;
+  if (mag > vmax) { v = v * (vmax / mag); }
+  return v;
+}`;
+
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
 export const CGL_STEP_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
@@ -52,10 +76,7 @@ ${PARAMS_STRUCT}
 @group(0) @binding(1) var<storage, read_write> mapOut: array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read> psi: array<vec2<f32>>;
 @group(0) @binding(3) var<uniform> P: Params;
-
-fn imAt(x: i32, y: i32, L: i32) -> f32 {
-  return psi[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))].y;
-}
+${FLOW_VEL}
 
 // 逆写像バッファのバイリニア標本（端は clamp）。
 fn sampleMap(p: vec2<f32>, L: i32) -> vec2<f32> {
@@ -80,10 +101,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x);
   let y = i32(gid.y);
   if (x >= L || y >= L) { return; }
-  // v = speed·∇⊥Im(ψ) = speed·(∂g/∂y, −∂g/∂x)
-  let dgdx = 0.5 * (imAt(x + 1, y, L) - imAt(x - 1, y, L));
-  let dgdy = 0.5 * (imAt(x, y + 1, L) - imAt(x, y - 1, L));
-  let v = P.speed * vec2<f32>(dgdy, -dgdx);
+  let v = flowVel(x, y, L, P.speed);
   let src = vec2<f32>(f32(x), f32(y)) - v;   // 後退トレース
   mapOut[u32(y * L + x)] = sampleMap(src, L);
 }
@@ -100,7 +118,7 @@ ${PARAMS_STRUCT}
 @group(0) @binding(4) var<uniform> P: Params;
 
 fn ix(x: i32, y: i32, L: i32) -> u32 { return u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1)); }
-fn imAt(x: i32, y: i32, L: i32) -> f32 { return psi[ix(x, y, L)].y; }
+${FLOW_VEL}
 
 fn samplePhi(p: vec2<f32>, L: i32) -> vec2<f32> {
   let x = clamp(p.x, 0.0, f32(L - 1));
@@ -125,9 +143,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let y = i32(gid.y);
   if (x >= L || y >= L) { return; }
   let c = u32(y * L + x);
-  let dgdx = 0.5 * (imAt(x + 1, y, L) - imAt(x - 1, y, L));
-  let dgdy = 0.5 * (imAt(x, y + 1, L) - imAt(x, y - 1, L));
-  let v = P.speed * vec2<f32>(dgdy, -dgdx);
+  let v = flowVel(x, y, L, P.speed);
   let p = vec2<f32>(f32(x), f32(y));
   let phi2 = samplePhi(p + v, L);            // φ1 を前進再移流 ≈ M のはず
   let corrected = phi1[c] + 0.5 * (M[c] - phi2);

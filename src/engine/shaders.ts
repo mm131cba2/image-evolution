@@ -89,6 +89,61 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// MacCormack 第2パス: φ1(前進再移流)で誤差補正し、逆写像を鮮鋭に保つ（写真がボケない）。
+// mapOut = φ1 + 0.5·(M − advect_fwd(φ1))、リミッタで M の近傍範囲にクランプ（オーバーシュート防止）。
+export const ADVECT_MC2_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> phi1: array<vec2<f32>>;   // 第1パス結果
+@group(0) @binding(1) var<storage, read> M: array<vec2<f32>>;      // 元の逆写像
+@group(0) @binding(2) var<storage, read_write> outMap: array<vec2<f32>>;
+@group(0) @binding(3) var<storage, read> psi: array<vec2<f32>>;
+@group(0) @binding(4) var<uniform> P: Params;
+
+fn ix(x: i32, y: i32, L: i32) -> u32 { return u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1)); }
+fn imAt(x: i32, y: i32, L: i32) -> f32 { return psi[ix(x, y, L)].y; }
+
+fn samplePhi(p: vec2<f32>, L: i32) -> vec2<f32> {
+  let x = clamp(p.x, 0.0, f32(L - 1));
+  let y = clamp(p.y, 0.0, f32(L - 1));
+  let x0 = i32(floor(x));
+  let y0 = i32(floor(y));
+  let x1 = min(x0 + 1, L - 1);
+  let y1 = min(y0 + 1, L - 1);
+  let fx = x - f32(x0);
+  let fy = y - f32(y0);
+  let a = phi1[u32(y0 * L + x0)];
+  let b = phi1[u32(y0 * L + x1)];
+  let cc = phi1[u32(y1 * L + x0)];
+  let d = phi1[u32(y1 * L + x1)];
+  return mix(mix(a, b, fx), mix(cc, d, fx), fy);
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x);
+  let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let dgdx = 0.5 * (imAt(x + 1, y, L) - imAt(x - 1, y, L));
+  let dgdy = 0.5 * (imAt(x, y + 1, L) - imAt(x, y - 1, L));
+  let v = P.speed * vec2<f32>(dgdy, -dgdx);
+  let p = vec2<f32>(f32(x), f32(y));
+  let phi2 = samplePhi(p + v, L);            // φ1 を前進再移流 ≈ M のはず
+  let corrected = phi1[c] + 0.5 * (M[c] - phi2);
+  // リミッタ: M の (x−v) 近傍 4 隅の範囲へクランプ
+  let bx0 = i32(floor(p.x - v.x));
+  let by0 = i32(floor(p.y - v.y));
+  let m00 = M[ix(bx0, by0, L)];
+  let m10 = M[ix(bx0 + 1, by0, L)];
+  let m01 = M[ix(bx0, by0 + 1, L)];
+  let m11 = M[ix(bx0 + 1, by0 + 1, L)];
+  let lo = min(min(m00, m10), min(m01, m11));
+  let hi = max(max(m00, m10), max(m01, m11));
+  outMap[c] = clamp(corrected, lo, hi);
+}
+`;
+
 // 表示: mode 0=A(原本を逆写像でサンプル) / 1=B(ψ→OKLCh) / 2=blend。
 export const DISPLAY_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}

@@ -2,7 +2,7 @@
 // ψ を storage buffer(vec2) のピンポンで更新し、逆写像 map で原本を流す（A）／OKLCh で描く（B）。
 // 数値は CPU 参照 src/engine/cglStep.ts と同一（WGSL は shaders.ts）。
 
-import { CGL_STEP_WGSL, ADVECT_WGSL, DISPLAY_WGSL } from "./shaders";
+import { CGL_STEP_WGSL, ADVECT_WGSL, ADVECT_MC2_WGSL, DISPLAY_WGSL } from "./shaders";
 import { linearToSrgb } from "../color";
 import type { CGLParams } from "./params";
 
@@ -14,6 +14,7 @@ export class CGLEngine {
   private mapCur = 0;
   private buffers: [GPUBuffer, GPUBuffer]; // ψ
   private maps: [GPUBuffer, GPUBuffer]; // 逆写像(ピクセル座標 vec2)
+  private mapTmp: GPUBuffer; // MacCormack 第1パス φ1
   private paramsBuf: GPUBuffer;
   private lutTex: GPUTexture;
   private origTex: GPUTexture;
@@ -21,6 +22,7 @@ export class CGLEngine {
   private origSampler: GPUSampler;
   private computePipeline: GPUComputePipeline;
   private advectPipeline: GPUComputePipeline;
+  private advectPipeline2: GPUComputePipeline;
   private renderPipeline: GPURenderPipeline;
   private computeBG: [GPUBindGroup, GPUBindGroup];
   private paramsHost = new ArrayBuffer(PARAMS_BYTES);
@@ -36,6 +38,7 @@ export class CGLEngine {
       device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     this.buffers = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
     this.maps = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
+    this.mapTmp = mkStorage(n * 2 * 4);
 
     this.paramsBuf = device.createBuffer({
       size: PARAMS_BYTES,
@@ -65,6 +68,7 @@ export class CGLEngine {
 
     const stepMod = device.createShaderModule({ code: CGL_STEP_WGSL });
     const advMod = device.createShaderModule({ code: ADVECT_WGSL });
+    const adv2Mod = device.createShaderModule({ code: ADVECT_MC2_WGSL });
     const dispMod = device.createShaderModule({ code: DISPLAY_WGSL });
 
     this.computePipeline = device.createComputePipeline({
@@ -74,6 +78,10 @@ export class CGLEngine {
     this.advectPipeline = device.createComputePipeline({
       layout: "auto",
       compute: { module: advMod, entryPoint: "main" },
+    });
+    this.advectPipeline2 = device.createComputePipeline({
+      layout: "auto",
+      compute: { module: adv2Mod, entryPoint: "main" },
     });
     this.renderPipeline = device.createRenderPipeline({
       layout: "auto",
@@ -164,24 +172,45 @@ export class CGLEngine {
     this.device.queue.submit([enc.finish()]);
   }
 
-  // 逆写像を ψ 由来の速度で 1 ステップ移流（モード A/blend のとき呼ぶ）。
+  // 逆写像を ψ 由来の速度で移流（MacCormack 2 パス・写真を鮮鋭に保つ）。
   advectMap(): void {
-    const bg = this.device.createBindGroup({
+    const psi = this.buffers[this.cur];
+    const wg = Math.ceil(this.L / 8);
+    const enc = this.device.createCommandEncoder();
+
+    // パス1: mapCur → mapTmp（後退 semi-Lagrangian）
+    const bg1 = this.device.createBindGroup({
       layout: this.advectPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.maps[this.mapCur] } },
-        { binding: 1, resource: { buffer: this.maps[this.mapCur ^ 1] } },
-        { binding: 2, resource: { buffer: this.buffers[this.cur] } },
+        { binding: 1, resource: { buffer: this.mapTmp } },
+        { binding: 2, resource: { buffer: psi } },
         { binding: 3, resource: { buffer: this.paramsBuf } },
       ],
     });
-    const enc = this.device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(this.advectPipeline);
-    pass.setBindGroup(0, bg);
-    const wg = Math.ceil(this.L / 8);
-    pass.dispatchWorkgroups(wg, wg);
-    pass.end();
+    const p1 = enc.beginComputePass();
+    p1.setPipeline(this.advectPipeline);
+    p1.setBindGroup(0, bg1);
+    p1.dispatchWorkgroups(wg, wg);
+    p1.end();
+
+    // パス2: 誤差補正 → maps[mapCur^1]
+    const bg2 = this.device.createBindGroup({
+      layout: this.advectPipeline2.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.mapTmp } },
+        { binding: 1, resource: { buffer: this.maps[this.mapCur] } },
+        { binding: 2, resource: { buffer: this.maps[this.mapCur ^ 1] } },
+        { binding: 3, resource: { buffer: psi } },
+        { binding: 4, resource: { buffer: this.paramsBuf } },
+      ],
+    });
+    const p2 = enc.beginComputePass();
+    p2.setPipeline(this.advectPipeline2);
+    p2.setBindGroup(0, bg2);
+    p2.dispatchWorkgroups(wg, wg);
+    p2.end();
+
     this.device.queue.submit([enc.finish()]);
     this.mapCur ^= 1;
   }

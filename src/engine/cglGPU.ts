@@ -105,7 +105,7 @@ export class CGLEngine {
     this.resetMap();
   }
 
-  setState(p: CGLParams, mode: ModeNum, blend: number, ampRef = 1.0): void {
+  setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
     dv.setFloat32(4, p.b, true);
@@ -116,6 +116,7 @@ export class CGLEngine {
     dv.setFloat32(24, p.speed, true);
     dv.setUint32(28, mode, true);
     dv.setFloat32(32, blend, true);
+    dv.setFloat32(36, phaseRef, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 

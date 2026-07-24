@@ -32,6 +32,7 @@ export interface ControlCallbacks {
   onReset: () => void;
   onFile: (f: File) => void;
   onSeedType: (s: Seed) => void;
+  onCoRotate: (on: boolean) => void;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
 
@@ -186,6 +187,17 @@ export function buildControls(
   seedSel.addEventListener("change", () => cb.onSeedType(seedSel.value as Seed));
   seedRow.appendChild(seedSel);
   panel.appendChild(seedRow);
+
+  // 色の全画面ストロボ（CGL の一様位相回転）を止める。既定 ON。
+  const coRow = document.createElement("label");
+  coRow.style.cssText = "display:flex;gap:6px;align-items:center;margin-top:6px;cursor:pointer;";
+  const coChk = document.createElement("input");
+  coChk.type = "checkbox";
+  coChk.checked = true;
+  coChk.addEventListener("change", () => cb.onCoRotate(coChk.checked));
+  coRow.appendChild(coChk);
+  coRow.appendChild(document.createTextNode("色の回転を止める"));
+  panel.appendChild(coRow);
 
   // ボタン列: 画像・リセット・一時停止。
   const btnRow = document.createElement("div");

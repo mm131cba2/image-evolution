@@ -79,8 +79,11 @@ async function main(): Promise<void> {
   let seedType: Seed = DEFAULT_CONFIG.seed;
   let lastFile: File | null = null;
   let running = true;
+  // 共回転フレーム: CGL の一様位相回転 dθ/dt=−c を表示上で打ち消す（全画面の色ストロボ防止）。
+  let coRotate = true;
+  let phaseRef = 0;
 
-  const apply = (): void => engine.setState(params, modeNum(mode), blend);
+  const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
   const seedDefault = (): void => {
     const re = new Float32Array(L * L);
@@ -131,6 +134,9 @@ async function main(): Promise<void> {
     onSeedType: (s) => {
       seedType = s;
     },
+    onCoRotate: (on) => {
+      coRotate = on;
+    },
     onTogglePause: () => {
       running = !running;
       return running;
@@ -141,8 +147,11 @@ async function main(): Promise<void> {
   const loop = (): void => {
     if (running) {
       engine.stepCGL(STEPS_PER_FRAME);
+      // 一様回転ぶんだけ表示位相を戻す（dθ/dt=−c なので +c·Δt）
+      if (coRotate) phaseRef += params.c * params.dt * STEPS_PER_FRAME;
       if (mode !== "B") engine.advectMap(); // A / blend のとき写真を流す
     }
+    engine.setState(params, modeNum(mode), blend, phaseRef);
     engine.render(gpu.context);
     requestAnimationFrame(loop);
   };

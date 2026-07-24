@@ -16,6 +16,10 @@ export interface ImageLike {
 
 export type Seed = "phase" | "amp";
 
+// 位相種の位相幅。2π にすると輝度 0 と 1 が同じ位相になり、人工的な位相欠陥が
+// 生まれて自壊する（設計ノート checks/cgl_check2.py で確認）。巻き戻しの無い幅にする。
+export const PHASE_SPAN = 0.8 * Math.PI;
+
 export interface Field {
   orig: Float32Array; // L*L*4 線形光 RGBA（A=1）。モード A のサンプル元。
   psiRe: Float32Array; // L*L
@@ -88,7 +92,6 @@ export function imageToField(img: ImageLike, L: number, seed: Seed = "phase"): F
   const orig = new Float32Array(L * L * 4);
   const psiRe = new Float32Array(L * L);
   const psiIm = new Float32Array(L * L);
-  const TWO_PI = 2 * Math.PI;
   for (let i = 0; i < L * L; i++) {
     const r = lin[i * 3];
     const g = lin[i * 3 + 1];
@@ -99,8 +102,9 @@ export function imageToField(img: ImageLike, L: number, seed: Seed = "phase"): F
     orig[i * 4 + 3] = 1;
     const y = luminance709(r, g, b); // 線形光輝度 [0,1]
     if (seed === "phase") {
-      psiRe[i] = Math.cos(TWO_PI * y);
-      psiIm[i] = Math.sin(TWO_PI * y);
+      const th = PHASE_SPAN * (y - 0.5); // 巻き戻さない（±0.4π）
+      psiRe[i] = Math.cos(th);
+      psiIm[i] = Math.sin(th);
     } else {
       psiRe[i] = y;
       psiIm[i] = 0;

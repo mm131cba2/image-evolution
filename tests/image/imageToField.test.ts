@@ -64,6 +64,18 @@ describe("imageToField", () => {
     }
   });
 
+  it("位相種は巻き戻さない（輝度 0 と 1 が同じ位相にならない）", () => {
+    // 2π 幅にすると輝度 0/1 が同一位相になり人工的な位相欠陥が生まれて自壊する
+    // （設計ノート checks/cgl_check2.py）。幅は 2π 未満・単調でなければならない。
+    const dark = imageToField(makeImage(2, 2, () => [0, 0, 0]), 1, "phase");
+    const bright = imageToField(makeImage(2, 2, () => [255, 255, 255]), 1, "phase");
+    const thDark = Math.atan2(dark.psiIm[0], dark.psiRe[0]);
+    const thBright = Math.atan2(bright.psiIm[0], bright.psiRe[0]);
+    expect(Math.abs(thBright - thDark)).toBeGreaterThan(0.1); // 別の位相
+    expect(Math.abs(thBright - thDark)).toBeLessThan(2 * Math.PI - 0.1); // 巻き戻っていない
+    expect(thBright).toBeGreaterThan(thDark); // 輝度に対して単調
+  });
+
   it("振幅種は虚部ゼロ・実部が輝度", () => {
     const img = makeImage(4, 4, () => [255, 255, 255]);
     const f = imageToField(img, 2, "amp");

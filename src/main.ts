@@ -3,13 +3,34 @@
 // その輝度を位相に種付けして時間発展させる。
 
 import { initWebGPU } from "./engine/gpu";
-import { CGLEngine } from "./engine/cglGPU";
+import { CGLEngine, type ModeNum } from "./engine/cglGPU";
 import { buildCyclicLUT } from "./render/palette";
 import { DEFAULT_CONFIG } from "./config";
-import { imageToField, type Seed } from "./image/imageToField";
+import { imageToField, type Seed, type Field } from "./image/imageToField";
 import { buildControls } from "./ui/controls";
+import type { CGLParams } from "./engine/params";
+import type { Mode } from "./config";
 
 const L = DEFAULT_CONFIG.L; // 256
+
+function modeNum(m: Mode): ModeNum {
+  return m === "A" ? 0 : m === "B" ? 1 : 2;
+}
+
+// 画像未選択でもモード A が何か映すための既定原本（滑らかな色のグラデ・線形光 RGBA）。
+function defaultOriginal(): Float32Array {
+  const orig = new Float32Array(L * L * 4);
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < L; x++) {
+      const i = (y * L + x) * 4;
+      orig[i] = 0.5 + 0.4 * Math.sin((2 * Math.PI * x) / L);
+      orig[i + 1] = 0.5 + 0.4 * Math.sin((2 * Math.PI * y) / L + 1.7);
+      orig[i + 2] = 0.5 + 0.4 * Math.sin((2 * Math.PI * (x + y)) / L + 3.1);
+      orig[i + 3] = 1;
+    }
+  }
+  return orig;
+}
 
 function overlay(msg: string): void {
   const d = document.createElement("div");
@@ -20,20 +41,8 @@ function overlay(msg: string): void {
   document.body.appendChild(d);
 }
 
-// 既定の種: ランダム位相（|ψ|=1）。CGL が螺旋波へ組織化する。
-function defaultSeed(): { re: Float32Array; im: Float32Array } {
-  const re = new Float32Array(L * L);
-  const im = new Float32Array(L * L);
-  for (let i = 0; i < L * L; i++) {
-    const th = Math.random() * 2 * Math.PI;
-    re[i] = Math.cos(th);
-    im[i] = Math.sin(th);
-  }
-  return { re, im };
-}
-
-// 画像ファイル → L×L の場（面積平均は imageToField 側）。
-async function fieldFromFile(file: File, seed: Seed): Promise<{ re: Float32Array; im: Float32Array }> {
+// 画像ファイル → Field（原本 RGBA + 複素種・面積平均は imageToField 側）。
+async function fieldFromFile(file: File, seed: Seed): Promise<Field> {
   const bmp = await createImageBitmap(file);
   const cap = 2048;
   const scale = Math.min(1, cap / Math.max(bmp.width, bmp.height));
@@ -46,8 +55,7 @@ async function fieldFromFile(file: File, seed: Seed): Promise<{ re: Float32Array
   if (!c2) throw new Error("2d context 取得失敗");
   c2.drawImage(bmp, 0, 0, w, h);
   const id = c2.getImageData(0, 0, w, h);
-  const f = imageToField(id, L, seed);
-  return { re: f.psiRe, im: f.psiIm };
+  return imageToField(id, L, seed);
 }
 
 async function main(): Promise<void> {
@@ -63,28 +71,62 @@ async function main(): Promise<void> {
   }
 
   const engine = new CGLEngine(gpu.device, gpu.format, L, buildCyclicLUT());
-  engine.setParams(DEFAULT_CONFIG.params);
-  engine.seed(...seedPair(defaultSeed()));
 
-  // 状態: 種の種類と、最後に読んだ画像（リセットで再投入するため）。
+  // 表示状態（既定は安全に動く B。画像を入れて A に切り替えると写真が流れる）。
+  const params: CGLParams = { ...DEFAULT_CONFIG.params };
+  let mode: Mode = "B";
+  let blend = 0.5;
   let seedType: Seed = DEFAULT_CONFIG.seed;
   let lastFile: File | null = null;
   let running = true;
 
-  const reseed = (): void => {
-    if (lastFile) {
-      void fieldFromFile(lastFile, seedType).then((f) => engine.seed(f.re, f.im));
-    } else {
-      engine.seed(...seedPair(defaultSeed()));
+  const apply = (): void => engine.setState(params, modeNum(mode), blend);
+
+  const seedDefault = (): void => {
+    const re = new Float32Array(L * L);
+    const im = new Float32Array(L * L);
+    for (let i = 0; i < L * L; i++) {
+      const th = Math.random() * 2 * Math.PI;
+      re[i] = Math.cos(th);
+      im[i] = Math.sin(th);
     }
+    engine.seed(re, im);
   };
 
-  buildControls(DEFAULT_CONFIG.params, {
-    onParams: (p) => engine.setParams(p),
-    onReset: reseed,
+  engine.seedOriginal(defaultOriginal());
+  engine.resetMap();
+  seedDefault();
+  apply();
+
+  const loadImage = (file: File): void => {
+    void fieldFromFile(file, seedType).then((f) => {
+      engine.seedOriginal(f.orig);
+      engine.seed(f.psiRe, f.psiIm);
+      engine.resetMap();
+    });
+  };
+
+  buildControls(DEFAULT_CONFIG.params, mode, blend, {
+    onParams: (p) => {
+      Object.assign(params, p);
+      apply();
+    },
+    onMode: (m) => {
+      mode = m;
+      apply();
+    },
+    onBlend: (v) => {
+      blend = v;
+      apply();
+    },
+    onReset: () => {
+      engine.resetMap();
+      if (lastFile) loadImage(lastFile);
+      else seedDefault();
+    },
     onFile: (file) => {
       lastFile = file;
-      void fieldFromFile(file, seedType).then((f) => engine.seed(f.re, f.im));
+      loadImage(file);
     },
     onSeedType: (s) => {
       seedType = s;
@@ -97,15 +139,14 @@ async function main(): Promise<void> {
 
   const STEPS_PER_FRAME = 6;
   const loop = (): void => {
-    if (running) engine.step(STEPS_PER_FRAME);
+    if (running) {
+      engine.stepCGL(STEPS_PER_FRAME);
+      if (mode !== "B") engine.advectMap(); // A / blend のとき写真を流す
+    }
     engine.render(gpu.context);
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
-}
-
-function seedPair(s: { re: Float32Array; im: Float32Array }): [Float32Array, Float32Array] {
-  return [s.re, s.im];
 }
 
 void main();

@@ -4,6 +4,7 @@
 import type { CGLParams } from "../engine/params";
 import { PARAM_RANGES } from "../engine/params";
 import type { Seed } from "../image/imageToField";
+import type { Mode } from "../config";
 
 // 対数スケール: t∈[0,1] → [lo,hi]（dt のように桁が広い量に）。
 export function logScale(t: number, lo: number, hi: number): number {
@@ -26,6 +27,8 @@ export function needsSmallerDt(p: CGLParams): boolean {
 
 export interface ControlCallbacks {
   onParams: (p: CGLParams) => void;
+  onMode: (m: Mode) => void;
+  onBlend: (v: number) => void;
   onReset: () => void;
   onFile: (f: File) => void;
   onSeedType: (s: Seed) => void;
@@ -70,12 +73,57 @@ function linSlider(
   return r;
 }
 
-export function buildControls(initial: CGLParams, cb: ControlCallbacks): void {
+export function buildControls(
+  initial: CGLParams,
+  initialMode: Mode,
+  initialBlend: number,
+  cb: ControlCallbacks,
+): void {
   const p: CGLParams = { ...initial };
   const panel = document.createElement("div");
   panel.style.cssText =
     "position:fixed;top:10px;left:10px;width:260px;font-family:sans-serif;font-size:13px;" +
     "color:#ddd;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:10px;";
+
+  // モード選択（A=写真を流す / B=場を表示 / blend=混合）＋ blend スライダー。
+  const modeRow = document.createElement("div");
+  modeRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
+  const modeSel = document.createElement("select");
+  for (const [v, t] of [
+    ["A", "A: 写真を流す"],
+    ["B", "B: 場を表示"],
+    ["blend", "blend: 混合"],
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    if (v === initialMode) o.selected = true;
+    modeSel.appendChild(o);
+  }
+  modeSel.style.flex = "1";
+  modeSel.addEventListener("change", () => cb.onMode(modeSel.value as Mode));
+  modeRow.appendChild(modeSel);
+  panel.appendChild(modeRow);
+
+  {
+    const { row: r, value } = row("blend");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = String(initialBlend);
+    input.style.flex = "1";
+    value.textContent = initialBlend.toFixed(2);
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onBlend(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+  }
 
   const status = document.createElement("div");
   status.style.cssText = "margin-bottom:6px;color:#bbb;";

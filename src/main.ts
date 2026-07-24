@@ -6,7 +6,8 @@ import { initWebGPU } from "./engine/gpu";
 import { CGLEngine } from "./engine/cglGPU";
 import { buildCyclicLUT } from "./render/palette";
 import { DEFAULT_CONFIG } from "./config";
-import { imageToField } from "./image/imageToField";
+import { imageToField, type Seed } from "./image/imageToField";
+import { buildControls } from "./ui/controls";
 
 const L = DEFAULT_CONFIG.L; // 256
 
@@ -32,7 +33,7 @@ function defaultSeed(): { re: Float32Array; im: Float32Array } {
 }
 
 // 画像ファイル → L×L の場（面積平均は imageToField 側）。
-async function fieldFromFile(file: File): Promise<{ re: Float32Array; im: Float32Array }> {
+async function fieldFromFile(file: File, seed: Seed): Promise<{ re: Float32Array; im: Float32Array }> {
   const bmp = await createImageBitmap(file);
   const cap = 2048;
   const scale = Math.min(1, cap / Math.max(bmp.width, bmp.height));
@@ -45,40 +46,8 @@ async function fieldFromFile(file: File): Promise<{ re: Float32Array; im: Float3
   if (!c2) throw new Error("2d context 取得失敗");
   c2.drawImage(bmp, 0, 0, w, h);
   const id = c2.getImageData(0, 0, w, h);
-  const f = imageToField(id, L, DEFAULT_CONFIG.seed);
+  const f = imageToField(id, L, seed);
   return { re: f.psiRe, im: f.psiIm };
-}
-
-function buildControls(onFile: (f: File) => void, onToggle: () => boolean): void {
-  const bar = document.createElement("div");
-  bar.style.cssText =
-    "position:fixed;top:10px;left:10px;display:flex;gap:8px;align-items:center;" +
-    "font-family:sans-serif;font-size:13px;color:#ddd;background:rgba(0,0,0,.45);" +
-    "padding:6px 10px;border-radius:8px;";
-
-  const label = document.createElement("label");
-  label.textContent = "画像を選ぶ";
-  label.style.cssText = "cursor:pointer;text-decoration:underline;";
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "image/*";
-  input.style.display = "none";
-  input.addEventListener("change", () => {
-    const f = input.files?.[0];
-    if (f) onFile(f);
-  });
-  label.appendChild(input);
-
-  const pause = document.createElement("button");
-  pause.textContent = "⏸ 一時停止";
-  pause.style.cssText = "cursor:pointer;";
-  pause.addEventListener("click", () => {
-    pause.textContent = onToggle() ? "⏸ 一時停止" : "▶ 再生";
-  });
-
-  bar.appendChild(label);
-  bar.appendChild(pause);
-  document.body.appendChild(bar);
 }
 
 async function main(): Promise<void> {
@@ -95,19 +64,36 @@ async function main(): Promise<void> {
 
   const engine = new CGLEngine(gpu.device, gpu.format, L, buildCyclicLUT());
   engine.setParams(DEFAULT_CONFIG.params);
-  const s0 = defaultSeed();
-  engine.seed(s0.re, s0.im);
+  engine.seed(...seedPair(defaultSeed()));
 
+  // 状態: 種の種類と、最後に読んだ画像（リセットで再投入するため）。
+  let seedType: Seed = DEFAULT_CONFIG.seed;
+  let lastFile: File | null = null;
   let running = true;
-  buildControls(
-    (file) => {
-      void fieldFromFile(file).then((f) => engine.seed(f.re, f.im));
+
+  const reseed = (): void => {
+    if (lastFile) {
+      void fieldFromFile(lastFile, seedType).then((f) => engine.seed(f.re, f.im));
+    } else {
+      engine.seed(...seedPair(defaultSeed()));
+    }
+  };
+
+  buildControls(DEFAULT_CONFIG.params, {
+    onParams: (p) => engine.setParams(p),
+    onReset: reseed,
+    onFile: (file) => {
+      lastFile = file;
+      void fieldFromFile(file, seedType).then((f) => engine.seed(f.re, f.im));
     },
-    () => {
+    onSeedType: (s) => {
+      seedType = s;
+    },
+    onTogglePause: () => {
       running = !running;
       return running;
     },
-  );
+  });
 
   const STEPS_PER_FRAME = 6;
   const loop = (): void => {
@@ -116,6 +102,10 @@ async function main(): Promise<void> {
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
+}
+
+function seedPair(s: { re: Float32Array; im: Float32Array }): [Float32Array, Float32Array] {
+  return [s.re, s.im];
 }
 
 void main();

@@ -12,7 +12,7 @@ export const CYCLIC_L = 0.72;
 export const CYCLIC_C = 0.11;
 
 // 位相 [0,2π) → sRGB の 256 段循環 LUT（RGBA バイト）。
-export function buildCyclicLUT(): Uint8Array {
+export function buildCyclicLUT(): Uint8Array<ArrayBuffer> {
   const lut = new Uint8Array(LUT_SIZE * 4);
   for (let i = 0; i < LUT_SIZE; i++) {
     const h = (2 * Math.PI * i) / LUT_SIZE;

@@ -21,10 +21,17 @@ npm run build    # dist/ に本番ビルド（base: './' ＝相対パス）
 起動すると既定の種で螺旋波が動く。「画像を選ぶ」で画像の輝度を位相に種付けして発展。
 
 ## デプロイ（GitHub Pages: mm131cba2.github.io）
-`base: './'`（相対パス）なのでサブパス配信に耐える。`npm run build` の `dist/` を Pages へ:
-- 別リポジトリ `image-evolution` を作り `dist/` を公開 → `mm131cba2.github.io/image-evolution/`
-- または `mm131cba2.github.io` リポジトリのサブフォルダに置く
-- GitHub Actions で `npm run build` → `dist/` を `gh-pages` へ、が自動化として楽（後日）。
+`.github/workflows/deploy.yml` を同梱済み＝**main に push すると自動でビルド＆公開**。
+`base: './'` なのでサブパス（`mm131cba2.github.io/image-evolution/`）で動く。
+
+初回のみ:
+```
+gh auth login                                   # 一度だけ
+gh repo create image-evolution --public --source=. --remote=origin --push
+# → GitHub Settings → Pages → Source を "GitHub Actions" にする
+#   （または gh api -X POST repos/mm131cba2/image-evolution/pages -f build_type=workflow）
+```
+以降は `git push` で自動デプロイ。公開先 `https://mm131cba2.github.io/image-evolution/`。
 
 ## 状態
 純ロジック（パラメータ・画像→複素種・OKLCh LUT・設定/URL）＋ CGL コアは単体テスト済み（36 tests）。

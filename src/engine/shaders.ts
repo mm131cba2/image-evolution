@@ -128,6 +128,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// 四元数 CGL（全色発展）。状態 q=vec4(w,x,y,z)。CPU 参照 dynamics.ts quatCglStep と 1:1。
+// I=(1,1,1)/√3（軸）。∂q/∂t = q + (1+bI)D∇²q − (1+cI)|q|²q。
+export const QUAT_STEP_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn at(x: i32, y: i32, L: i32) -> vec4<f32> {
+  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
+}
+// 四元数積 a⊗b（a=(aw,ax,ay,az)）。
+fn qmul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+    a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+    a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+    a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x,
+  );
+}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let q = inBuf[c];  // (w,x,y,z)
+  let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * q;
+  let m2 = dot(q, q);
+  let s = 0.57735027; // 1/√3
+  let Ab = vec4<f32>(1.0, P.b*s, P.b*s, P.b*s);
+  let Ac = vec4<f32>(1.0, P.c*s, P.c*s, P.c*s);
+  // qmul は a=(aw,ax,ay,az) 規約。ここでは vec4 の .x=w,.y=x,.z=y,.w=z として扱う。
+  let diff = qmul(Ab, P.D * lap);
+  let nl = qmul(Ac, m2 * q);
+  outBuf[c] = q + P.dt * (q + diff - nl);
+}
+`;
+
 // モード A の移流: 逆写像（原本をどこから引くか）を ψ 由来の速度で 1 ステップ後退。
 // v = speed·∇⊥Im(ψ)（非圧縮・非往復）。v1 は単純 semi-Lagrangian（MacCormack 上位互換は後日）。
 export const ADVECT_WGSL = /* wgsl */ `
@@ -238,6 +276,7 @@ ${PARAMS_STRUCT}
 @group(0) @binding(4) var<storage, read> fmap: array<vec2<f32>>;    // 逆写像
 @group(0) @binding(5) var orig: texture_2d<f32>;                    // 原本(sRGB)
 @group(0) @binding(6) var origSamp: sampler;
+@group(0) @binding(7) var<storage, read> quatField: array<vec4<f32>>; // 四元数場 q=(w,x,y,z)
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -248,6 +287,32 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 // BT.601 YCbCr→sRGB（dynamics.ts yCbCrToRgb と一致）。
 fn ycbcr2rgb(Y: f32, Cb: f32, Cr: f32) -> vec3<f32> {
   return vec3<f32>(Y + 1.402 * Cr, Y - 0.344136 * Cb - 0.714136 * Cr, Y + 1.772 * Cb);
+}
+
+// OKLab (L,a,b) → 線形 sRGB（color.ts oklabToLinear と同一係数・pow でなく積で3乗）。
+fn oklab2lin(L: f32, a: f32, b: f32) -> vec3<f32> {
+  let l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  let m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  let s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+  let l = l_ * l_ * l_; let m = m_ * m_ * m_; let s = s_ * s_ * s_;
+  return vec3<f32>(
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+  );
+}
+fn lin2srgb1(x: f32) -> f32 {
+  let c = clamp(x, 0.0, 1.0);
+  return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
+}
+// 四元数積（DISPLAY 用・dynamics.ts qmul と同一規約 .x=w,.y=x,.z=y,.w=z）。
+fn qmulD(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+    a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+    a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+    a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x,
+  );
 }
 
 @fragment
@@ -291,6 +356,16 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     // 色差拡散: 輝度は原本・色差は発展した Cb,Cr（写真の形は保ち色だけ滲む）
     let Y = 0.299 * origHere.r + 0.587 * origHere.g + 0.114 * origHere.b;
     outc = clamp(ycbcr2rgb(Y, psi.x, psi.y), vec3<f32>(0.0), vec3<f32>(1.0));
+  } else if (P.dynamics == 4u) {
+    // 四元数（全色発展）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
+    var q = quatField[c];
+    let s3 = 0.57735027; // 1/√3（軸 I=(1,1,1)/√3）
+    // 共回転: exp(phaseRef·I)⊗q で均質左回転を相殺（phaseRef=0 なら回る）。
+    let rot = vec4<f32>(cos(P.phaseRef), sin(P.phaseRef) * s3, sin(P.phaseRef) * s3, sin(P.phaseRef) * s3);
+    q = qmulD(rot, q);
+    let Lab = vec3<f32>(0.5 + 0.5 * q.y, 0.3 * q.z, 0.3 * q.w); // Im→OKLab（種の逆変換）
+    let lin = oklab2lin(clamp(Lab.x, 0.0, 1.0), Lab.y, Lab.z);
+    outc = vec3<f32>(lin2srgb1(lin.r), lin2srgb1(lin.g), lin2srgb1(lin.b));
   } else if (P.mode == 1u) { outc = bcol; }
   else if (P.mode == 0u) { outc = acol; }
   else { outc = mix(acol, bcol, P.blend); }

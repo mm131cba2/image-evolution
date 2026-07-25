@@ -3,6 +3,7 @@ import {
   grayScottStep,
   leniaStep,
   chromaStep,
+  quatCglStep,
   rgbToYCbCr,
   yCbCrToRgb,
 } from "../../src/engine/dynamics";
@@ -70,6 +71,45 @@ describe("chromaStep", () => {
     for (let s = 0; s < 30; s++) chromaStep(cb, cr, L, 4, 0.02);
     expect(mean(cb)).toBeCloseTo(m0, 4); // 保存
     expect(variance(cb)).toBeLessThan(var0); // 均された
+  });
+});
+
+describe("quatCglStep（四元数CGL・全色発展）", () => {
+  const params = { b: 0.5, c: 0.9, D: 0, dt: 0.01 }; // D=0 で均質ODE（アトラクタ検証）
+
+  it("|q| がアトラクタ 1 に収束（複素 |ψ|→1 の四元数版）", () => {
+    const L = 4;
+    const q = new Float32Array(L * L * 4);
+    for (let i = 0; i < L * L; i++) {
+      q[i * 4] = 0; // w=0 始動
+      q[i * 4 + 1] = 0.3; q[i * 4 + 2] = 0.2; q[i * 4 + 3] = -0.1;
+    }
+    for (let s = 0; s < 800; s++) quatCglStep(q, L, params);
+    for (let i = 0; i < L * L; i++) {
+      const m = Math.hypot(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]);
+      expect(m).toBeGreaterThan(0.95);
+      expect(m).toBeLessThan(1.05);
+    }
+  });
+
+  it("純虚 3 成分すべてが時間発展する（明度 x も動く）", () => {
+    const L = 4;
+    const q = new Float32Array(L * L * 4);
+    for (let i = 0; i < L * L; i++) { q[i * 4 + 1] = 0.3; q[i * 4 + 2] = 0.2; q[i * 4 + 3] = -0.1; }
+    // 過渡後に各成分の可動を見る
+    for (let s = 0; s < 300; s++) quatCglStep(q, L, params);
+    const seen: number[][] = [[], [], []];
+    for (let s = 0; s < 400; s++) {
+      quatCglStep(q, L, params);
+      seen[0].push(q[1]); seen[1].push(q[2]); seen[2].push(q[3]);
+    }
+    const std = (a: number[]): number => {
+      const m = a.reduce((s, v) => s + v, 0) / a.length;
+      return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
+    };
+    expect(std(seen[0])).toBeGreaterThan(0.05); // x(明度) が動く
+    expect(std(seen[1])).toBeGreaterThan(0.05); // y(a) が動く
+    expect(std(seen[2])).toBeGreaterThan(0.05); // z(b) が動く
   });
 });
 

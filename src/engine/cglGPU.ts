@@ -7,6 +7,7 @@ import {
   GRAYSCOTT_WGSL,
   LENIA_WGSL,
   CHROMA_WGSL,
+  QUAT_STEP_WGSL,
   ADVECT_WGSL,
   ADVECT_MC2_WGSL,
   DISPLAY_WGSL,
@@ -16,7 +17,7 @@ import type { CGLParams } from "./params";
 
 const PARAMS_BYTES = 48;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
-export type DynNum = 0 | 1 | 2 | 3; // 0=cgl 1=grayscott 2=lenia 3=chroma
+export type DynNum = 0 | 1 | 2 | 3 | 4; // 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat
 
 export class CGLEngine {
   private cur = 0; // psi parity（最新）
@@ -30,6 +31,9 @@ export class CGLEngine {
   private sampler: GPUSampler;
   private origSampler: GPUSampler;
   private stepPipelines: GPUComputePipeline[]; // [cgl, grayscott, lenia, chroma]
+  private qbuf: [GPUBuffer, GPUBuffer]; // 四元数場 vec4 のピンポン
+  private quatPipeline: GPUComputePipeline;
+  private quatBG: [GPUBindGroup, GPUBindGroup];
   private advectPipeline: GPUComputePipeline;
   private advectPipeline2: GPUComputePipeline;
   private renderPipeline: GPURenderPipeline;
@@ -49,6 +53,7 @@ export class CGLEngine {
     this.buffers = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
     this.maps = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
     this.mapTmp = mkStorage(n * 2 * 4);
+    this.qbuf = [mkStorage(n * 4 * 4), mkStorage(n * 4 * 4)]; // vec4
 
     this.paramsBuf = device.createBuffer({
       size: PARAMS_BYTES,
@@ -100,6 +105,26 @@ export class CGLEngine {
       mkStep(GRAYSCOTT_WGSL),
       mkStep(LENIA_WGSL),
       mkStep(CHROMA_WGSL),
+    ];
+    // 四元数場（vec4）も同じ step レイアウト（storage in/out + uniform）を共有。
+    this.quatPipeline = mkStep(QUAT_STEP_WGSL);
+    this.quatBG = [
+      device.createBindGroup({
+        layout: stepBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.qbuf[0] } },
+          { binding: 1, resource: { buffer: this.qbuf[1] } },
+          { binding: 2, resource: { buffer: this.paramsBuf } },
+        ],
+      }),
+      device.createBindGroup({
+        layout: stepBGL,
+        entries: [
+          { binding: 0, resource: { buffer: this.qbuf[1] } },
+          { binding: 1, resource: { buffer: this.qbuf[0] } },
+          { binding: 2, resource: { buffer: this.paramsBuf } },
+        ],
+      }),
     ];
     this.advectPipeline = device.createComputePipeline({
       layout: "auto",
@@ -160,6 +185,11 @@ export class CGLEngine {
     this.device.queue.writeBuffer(this.buffers[this.cur], 0, inter);
   }
 
+  // 四元数場に種を投入（q4 = n*4 の interleave (w,x,y,z)）。
+  seedQuat(q4: Float32Array<ArrayBuffer>): void {
+    this.device.queue.writeBuffer(this.qbuf[this.cur], 0, q4);
+  }
+
   // 原本テクスチャを投入（orig は線形光 RGBA・L*L*4）。表示は sRGB で行うので変換して格納。
   seedOriginal(orig: Float32Array): void {
     const n = this.L * this.L;
@@ -190,14 +220,17 @@ export class CGLEngine {
   }
 
   // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
+  // dynamics==4(quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
   stepCGL(times: number): void {
-    const pipe = this.stepPipelines[this.dynamics];
+    const isQuat = this.dynamics === 4;
+    const pipe = isQuat ? this.quatPipeline : this.stepPipelines[this.dynamics];
+    const bgs = isQuat ? this.quatBG : this.computeBG;
     const enc = this.device.createCommandEncoder();
     const wg = Math.ceil(this.L / 8);
     for (let i = 0; i < times; i++) {
       const pass = enc.beginComputePass();
       pass.setPipeline(pipe);
-      pass.setBindGroup(0, this.computeBG[this.cur]);
+      pass.setBindGroup(0, bgs[this.cur]);
       pass.dispatchWorkgroups(wg, wg);
       pass.end();
       this.cur ^= 1;
@@ -259,6 +292,7 @@ export class CGLEngine {
         { binding: 4, resource: { buffer: this.maps[this.mapCur] } },
         { binding: 5, resource: this.origTex.createView() },
         { binding: 6, resource: this.origSampler },
+        { binding: 7, resource: { buffer: this.qbuf[this.cur] } },
       ],
     });
     const enc = this.device.createCommandEncoder();

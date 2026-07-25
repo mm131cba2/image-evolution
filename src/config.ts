@@ -8,8 +8,9 @@ import type { Seed } from "./image/imageToField";
 export type Mode = "A" | "B" | "blend";
 
 // 力学エンジン: cgl=複素GL(螺旋波/乱流) / grayscott=反応拡散(Turing) /
-// lenia=連続ライフ / chroma=色差拡散(輝度保持)。mode(A/B/blend) は cgl のみ有効。
-export type Dynamics = "cgl" | "grayscott" | "lenia" | "chroma";
+// lenia=連続ライフ / chroma=色差拡散(輝度保持) / quat=四元数CGL(全色発展)。
+// mode(A/B/blend) は cgl のみ有効。
+export type Dynamics = "cgl" | "grayscott" | "lenia" | "chroma" | "quat";
 
 export interface AppConfig {
   L: number;
@@ -31,7 +32,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 
 const MODES: readonly Mode[] = ["A", "B", "blend"];
 const SEEDS: readonly Seed[] = ["color", "phase", "amp"];
-const DYNAMICS: readonly Dynamics[] = ["cgl", "grayscott", "lenia", "chroma"];
+const DYNAMICS: readonly Dynamics[] = ["cgl", "grayscott", "lenia", "chroma", "quat"];
 
 function clampL(v: unknown): number {
   const n = typeof v === "number" ? v : NaN;

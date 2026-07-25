@@ -102,6 +102,7 @@ export function buildControls(
     ["grayscott", "力学: 反応拡散（Turing斑点）"],
     ["lenia", "力学: Lenia（連続ライフ）"],
     ["chroma", "力学: 色差拡散（輝度保持）"],
+    ["quat", "力学: 四元数（全色発展）"],
   ] as const) {
     const o = document.createElement("option");
     o.value = v;

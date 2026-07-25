@@ -11,6 +11,7 @@ import {
   seedGrayScott,
   seedLenia,
   seedChroma,
+  seedQuat,
   type Seed,
   type Field,
 } from "./image/imageToField";
@@ -25,7 +26,7 @@ function modeNum(m: Mode): ModeNum {
 }
 
 function dynNum(d: Dynamics): DynNum {
-  return d === "cgl" ? 0 : d === "grayscott" ? 1 : d === "lenia" ? 2 : 3;
+  return d === "cgl" ? 0 : d === "grayscott" ? 1 : d === "lenia" ? 2 : d === "chroma" ? 3 : 4;
 }
 
 // 画像未選択でもモード A が何か映すための既定原本（滑らかな色のグラデ・線形光 RGBA）。
@@ -119,6 +120,8 @@ async function main(): Promise<void> {
     engine.seedOriginal(f.orig);
     if (dynamics === "cgl") {
       engine.seed(f.psiRe, f.psiIm);
+    } else if (dynamics === "quat") {
+      engine.seedQuat(seedQuat(f.orig, L));
     } else {
       const s =
         dynamics === "grayscott" ? seedGrayScott(f.orig, L)
@@ -190,7 +193,7 @@ async function main(): Promise<void> {
   // 力学ごとの 1 論理フレーム当たりステップ数（cgl=標準／lenia=重いので少なめ／
   // chroma=拡散が遅く見えるので多め／grayscott=見やすくやや少なめ）。
   const stepsFor = (d: Dynamics): number =>
-    d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3 : 6;
+    d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3 : 6; // quat/cgl=6
   let acc = 0;
   let last = performance.now();
   const advance = (): void => {

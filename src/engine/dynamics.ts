@@ -98,6 +98,55 @@ export function chromaStep(re: Float32Array, im: Float32Array, L: number, D: num
   }
 }
 
+// ---------------------------------------------------------------------------
+// 四元数 CGL（全色発展）。状態 q=(w,x,y,z)。純虚部 (x,y,z) を色の3次元ベクトル
+// (OKLab L−0.5, a, b) とみなす。w は色に使わず内部自由度として走らせる。
+// ∂q/∂t = q + (1+bI)D∇²q − (1+cI)|q|²q,  I=単位純虚四元数（回転軸・傾けて全成分を動かす）。
+// 複素 CGL の i を四元数 I に置換した一般化。|q|→1 のアトラクタ（checks/quaternion-color.py）。
+// ---------------------------------------------------------------------------
+const A = 1 / Math.sqrt(3);
+export const QUAT_AXIS: readonly [number, number, number] = [A, A, A]; // I の純虚部（傾けた軸）
+
+// 四元数積 (aw,ax,ay,az)⊗(bw,bx,by,bz)。
+function qmul(
+  aw: number, ax: number, ay: number, az: number,
+  bw: number, bx: number, by: number, bz: number,
+): [number, number, number, number] {
+  return [
+    aw * bw - ax * bx - ay * by - az * bz,
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+  ];
+}
+
+// 4 成分を interleave した Float32Array（q[i*4+0..3]=w,x,y,z）を 1 ステップ進める。
+export function quatCglStep(q: Float32Array, L: number, p: { b: number; c: number; D: number; dt: number }): void {
+  const n = L * L;
+  const { b, c, D, dt } = p;
+  const [Ix, Iy, Iz] = QUAT_AXIS;
+  // 各成分のラプラシアン（壁反射）。
+  const comp = new Float32Array(n);
+  const lap = [new Float32Array(n), new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  for (let k = 0; k < 4; k++) {
+    for (let i = 0; i < n; i++) comp[i] = q[i * 4 + k];
+    lapReflect(comp, L, lap[k]);
+  }
+  for (let i = 0; i < n; i++) {
+    const w = q[i * 4], x = q[i * 4 + 1], y = q[i * 4 + 2], z = q[i * 4 + 3];
+    const m2 = w * w + x * x + y * y + z * z;
+    const lw = lap[0][i], lx = lap[1][i], ly = lap[2][i], lz = lap[3][i];
+    // (1+bI)⊗(D·∇²q)
+    const [dw, dx, dy, dz] = qmul(1, b * Ix, b * Iy, b * Iz, D * lw, D * lx, D * ly, D * lz);
+    // (1+cI)⊗(|q|²q)
+    const [nw, nx, ny, nz] = qmul(1, c * Ix, c * Iy, c * Iz, m2 * w, m2 * x, m2 * y, m2 * z);
+    q[i * 4] = w + dt * (w + dw - nw);
+    q[i * 4 + 1] = x + dt * (x + dx - nx);
+    q[i * 4 + 2] = y + dt * (y + dy - ny);
+    q[i * 4 + 3] = z + dt * (z + dz - nz);
+  }
+}
+
 // BT.601（フルレンジ）sRGB ↔ YCbCr。Cb,Cr は [−0.5,0.5]。
 export function rgbToYCbCr(r: number, g: number, b: number): [number, number, number] {
   return [

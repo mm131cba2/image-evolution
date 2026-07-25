@@ -61,9 +61,9 @@ describe("PRESETS", () => {
     }
   });
 
-  it("乱流プリセットは dt<=0.01（陽解法の安定域）", () => {
-    const turb = PRESETS.find((p) => p.name.includes("乱流"));
-    expect(turb).toBeDefined();
-    expect(turb!.config.params.dt).toBeLessThanOrEqual(0.01);
+  it("乱流域(1+bc<0)のプリセットは dt<=0.01（陽解法の安定域）", () => {
+    const turb = PRESETS.filter((p) => 1 + p.config.params.b * p.config.params.c < 0);
+    expect(turb.length).toBeGreaterThan(0);
+    for (const p of turb) expect(p.config.params.dt).toBeLessThanOrEqual(0.01);
   });
 });

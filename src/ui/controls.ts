@@ -178,12 +178,17 @@ export function buildControls(
   const seedRow = document.createElement("div");
   seedRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:6px;";
   const seedSel = document.createElement("select");
-  for (const s of ["phase", "amp"] as Seed[]) {
+  for (const [v, t] of [
+    ["color", "種: 写真の色（色相・彩度）"],
+    ["phase", "種: 明るさ→位相"],
+    ["amp", "種: 明るさ→振幅"],
+  ] as const) {
     const o = document.createElement("option");
-    o.value = s;
-    o.textContent = s === "phase" ? "位相に写真" : "振幅に写真";
+    o.value = v;
+    o.textContent = t;
     seedSel.appendChild(o);
   }
+  seedSel.style.flex = "1";
   seedSel.addEventListener("change", () => cb.onSeedType(seedSel.value as Seed));
   seedRow.appendChild(seedSel);
   panel.appendChild(seedRow);

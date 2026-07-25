@@ -83,4 +83,18 @@ describe("imageToField", () => {
     // 白＝線形 RGB 1 → 輝度 1
     expect(f.psiRe[0]).toBeCloseTo(1, 5);
   });
+
+  it("色種は arg ψ=写真の色相・|ψ|=彩度（灰は ψ≈0）", () => {
+    // 赤(h≈29°)と青(h≈264°)で位相が写真の色相に一致し、灰は無彩色(ψ≈0)。
+    const red = imageToField(makeImage(1, 1, () => [255, 0, 0]), 1, "color");
+    const blue = imageToField(makeImage(1, 1, () => [0, 0, 255]), 1, "color");
+    const gray = imageToField(makeImage(1, 1, () => [128, 128, 128]), 1, "color");
+    const hRed = (Math.atan2(red.psiIm[0], red.psiRe[0]) * 180) / Math.PI;
+    const hBlue = ((Math.atan2(blue.psiIm[0], blue.psiRe[0]) * 180) / Math.PI + 360) % 360;
+    expect(hRed).toBeCloseTo(29.2, 0); // OKLab 赤の色相
+    expect(hBlue).toBeCloseTo(264.1, 0); // OKLab 青の色相
+    expect(Math.hypot(gray.psiRe[0], gray.psiIm[0])).toBeLessThan(0.02); // 灰は無彩色
+    // 純色は彩度が高く |ψ| が飽和（C/C_REF≥1 → 1 にクランプ）
+    expect(Math.hypot(red.psiRe[0], red.psiIm[0])).toBeCloseTo(1, 5);
+  });
 });

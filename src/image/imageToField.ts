@@ -3,9 +3,9 @@
 // 規律（設計ノート checks/algo.py）:
 //  - sRGB は線形光へ（拡散/移流は物理的な混色＝線形光で）。
 //  - ダウンサンプルは面積平均（点サンプリングはモアレを作る）。
-//  - 複素種は既定「位相に写真」ψ0=exp(2πi·Y)（位相の方が CGL で記憶が残る・checks/cgl.py）。
+//  - 複素種は既定「色に写真」ψ0=OKLab(a,b)（色相→位相・彩度→振幅・checks/color-field.py）。
 
-import { srgbToLinear, luminance709 } from "../color";
+import { srgbToLinear, luminance709, linearToOklab } from "../color";
 
 // ImageData 互換の構造型（テストでは手組みオブジェクトを渡せる＝jsdom 不要）。
 export interface ImageLike {
@@ -14,11 +14,22 @@ export interface ImageLike {
   height: number;
 }
 
-export type Seed = "phase" | "amp";
+// color=写真の色をそのまま複素場に（ψ=OKLab(a,b): 色相→位相・彩度→振幅）＝既定。
+//        t=0 で写真の色みが出る。明度 L は 2 自由度に載らず捨てる（表示は一定明度）。
+// phase=輝度だけを位相に（|ψ|=1・色は LUT が作る・灰色写真でも構造が出る）。
+// amp  =輝度だけを振幅に（位相は一様）。
+export type Seed = "color" | "phase" | "amp";
 
-// 位相種の位相幅。2π にすると輝度 0 と 1 が同じ位相になり、人工的な位相欠陥が
-// 生まれて自壊する（設計ノート checks/cgl_check2.py で確認）。巻き戻しの無い幅にする。
+// 位相種（seed=phase）の位相幅。2π にすると輝度 0 と 1 が同じ位相になり、人工的な
+// 位相欠陥が生まれて自壊する（設計ノート checks/cgl_check2.py）。巻き戻しの無い幅にする。
 export const PHASE_SPAN = 0.8 * Math.PI;
+
+// 振幅種（seed=amp）の下限。|ψ|=0 は位相が未定義＝人工的な欠陥になるので避ける。
+export const AMP_FLOOR = 0.15;
+
+// color 種の彩度基準。C/C_REF を |ψ| に（純色 C≈0.12–0.31 は飽和・淡色は部分彩度）。
+// 灰色(C≈0)は自然に ψ≈0＝無彩色（設計ノート checks/color-field.py）。
+export const CHROMA_REF = 0.12;
 
 export interface Field {
   orig: Float32Array; // L*L*4 線形光 RGBA（A=1）。モード A のサンプル元。
@@ -76,7 +87,7 @@ export function resampleBox(
 }
 
 // 画像を L×L の場に変換。
-export function imageToField(img: ImageLike, L: number, seed: Seed = "phase"): Field {
+export function imageToField(img: ImageLike, L: number, seed: Seed = "color"): Field {
   const { data, width: sw, height: sh } = img;
   // sRGB バイト → 線形光 RGB（3ch）。
   const linSrc = new Float32Array(sw * sh * 3);
@@ -100,13 +111,21 @@ export function imageToField(img: ImageLike, L: number, seed: Seed = "phase"): F
     orig[i * 4 + 1] = g;
     orig[i * 4 + 2] = b;
     orig[i * 4 + 3] = 1;
-    const y = luminance709(r, g, b); // 線形光輝度 [0,1]
-    if (seed === "phase") {
+    if (seed === "color") {
+      // 写真の色をそのまま: ψ = OKLab(a,b)/C_REF。arg ψ=色相・|ψ|=彩度。
+      const [, oa, ob] = linearToOklab(r, g, b);
+      const c = Math.hypot(oa, ob);
+      const s = c > 0 ? Math.min(1, c / CHROMA_REF) / c : 0; // |ψ|=min(1,C/C_REF)
+      psiRe[i] = oa * s;
+      psiIm[i] = ob * s;
+    } else if (seed === "phase") {
+      const y = luminance709(r, g, b); // 線形光輝度 [0,1]
       const th = PHASE_SPAN * (y - 0.5); // 巻き戻さない（±0.4π）
       psiRe[i] = Math.cos(th);
       psiIm[i] = Math.sin(th);
     } else {
-      psiRe[i] = y;
+      const y = luminance709(r, g, b);
+      psiRe[i] = AMP_FLOOR + (1 - AMP_FLOOR) * y; // 0 を避けた振幅
       psiIm[i] = 0;
     }
   }

@@ -174,8 +174,12 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   // 共回転フレーム: CGL の一様位相回転(dθ/dt=−c)を打ち消して色の全画面ストロボを止める。
   // phaseRef=0 なら従来どおり回る。
   let phase = atan2(psi.y, psi.x) + P.phaseRef;
-  let u = phase / (2.0 * 3.14159265) + 0.5;
+  // u=fract(phase/2π): LUT 色相=2π·u なので表示色相=arg ψ に一致（種 color の色を保つ）。
+  // +0.5 offset は色相を π ずらす＝補色になる（checks/color-field.py で確認）ので使わない。
+  let u = fract(phase / (2.0 * 3.14159265));
   let lutc = textureSample(lut, samp, vec2<f32>(u, 0.5)).rgb;
+  // 振幅→彩度・位相→色相。種 ψ=(a,b)（OKLab の対向色平面）と同じ規約なので、
+  // t=0 では写真の色相・彩度がそのまま出る。ψ=0（無彩色・渦の芯）は中立灰。
   let bcol = mix(vec3<f32>(0.5), lutc, clamp(amp / P.ampRef, 0.0, 1.0));
 
   // A: 逆写像で原本をサンプル

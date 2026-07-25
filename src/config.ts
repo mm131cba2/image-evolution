@@ -20,11 +20,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   params: DEFAULT_PARAMS,
   mode: "A",
   blend: 0.5,
-  seed: "phase",
+  seed: "color", // 写真の色をそのまま場に（色相→位相・彩度→振幅）
 };
 
 const MODES: readonly Mode[] = ["A", "B", "blend"];
-const SEEDS: readonly Seed[] = ["phase", "amp"];
+const SEEDS: readonly Seed[] = ["color", "phase", "amp"];
 
 function clampL(v: unknown): number {
   const n = typeof v === "number" ? v : NaN;
@@ -93,11 +93,11 @@ export const PRESETS: readonly { name: string; config: AppConfig }[] = [
     config: normalizeConfig({ mode: "A", seed: "phase", params: { ...DEFAULT_PARAMS, b: 0.5, c: 0.5 } }),
   },
   {
-    name: "位相乱流・模様 (B)",
-    config: normalizeConfig({ mode: "B", seed: "phase", params: { ...DEFAULT_PARAMS, b: 2, c: -1, dt: 0.01 } }),
+    name: "写真の色で模様 (B)",
+    config: normalizeConfig({ mode: "B", seed: "color", params: { ...DEFAULT_PARAMS, b: 2, c: -1, dt: 0.01 } }),
   },
   {
     name: "溶けていく (blend)",
-    config: normalizeConfig({ mode: "blend", blend: 0.3, seed: "phase", params: { ...DEFAULT_PARAMS } }),
+    config: normalizeConfig({ mode: "blend", blend: 0.3, seed: "color", params: { ...DEFAULT_PARAMS } }),
   },
 ];

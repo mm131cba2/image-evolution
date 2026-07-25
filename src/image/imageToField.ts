@@ -168,7 +168,7 @@ export function seedLenia(orig: Float32Array, L: number): { re: Float32Array; im
 }
 
 // 四元数（全色発展）: q=(w,x,y,z) を interleave した Float32Array（n*4）。
-// 純虚部 Im=(x,y,z) に写真の OKLab (L,a,b) を載せる（表示の逆変換）: x=2(L−0.5), y=a/0.3, z=b/0.3。
+// 純虚部 Im=(x,y,z) に写真の OKLab (L,a,b) を載せる（表示の逆変換）: x=2(L−0.5), y=a/0.14, z=b/0.14。
 // w=0 始動（w は色に使わず内部自由度として発展）。
 export function seedQuat(orig: Float32Array, L: number): Float32Array<ArrayBuffer> {
   const n = L * L;
@@ -178,8 +178,8 @@ export function seedQuat(orig: Float32Array, L: number): Float32Array<ArrayBuffe
     const [ol, oa, ob] = linearToOklab(orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2]);
     q[i * 4] = 0; // w
     q[i * 4 + 1] = cl(2 * (ol - 0.5)); // x ← L
-    q[i * 4 + 2] = cl(oa / 0.3); // y ← a
-    q[i * 4 + 3] = cl(ob / 0.3); // z ← b
+    q[i * 4 + 2] = cl(oa / 0.14); // y ← a（表示の彩度スケールと一致）
+    q[i * 4 + 3] = cl(ob / 0.14); // z ← b
   }
   return q;
 }

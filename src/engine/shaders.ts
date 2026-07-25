@@ -363,8 +363,12 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     // 共回転: exp(phaseRef·I)⊗q で均質左回転を相殺（phaseRef=0 なら回る）。
     let rot = vec4<f32>(cos(P.phaseRef), sin(P.phaseRef) * s3, sin(P.phaseRef) * s3, sin(P.phaseRef) * s3);
     q = qmulD(rot, q);
-    let Lab = vec3<f32>(0.5 + 0.5 * q.y, 0.3 * q.z, 0.3 * q.w); // Im→OKLab（種の逆変換）
-    let lin = oklab2lin(clamp(Lab.x, 0.0, 1.0), Lab.y, Lab.z);
+    let Ld = clamp(0.5 + 0.5 * q.y, 0.0, 1.0);        // 明度（純虚 x）
+    // 明度の端(黒/白)は sRGB 域が狭くクリップ→ネオン化するので彩度を絞る（域内に収め
+    // ケバさを抑える）。ミッドトーンで最大・両端で 0 に落とす。
+    let taper = 1.0 - (2.0 * Ld - 1.0) * (2.0 * Ld - 1.0);
+    let S = 0.14 * taper;
+    let lin = oklab2lin(Ld, S * q.z, S * q.w);
     outc = vec3<f32>(lin2srgb1(lin.r), lin2srgb1(lin.g), lin2srgb1(lin.b));
   } else if (P.mode == 1u) { outc = bcol; }
   else if (P.mode == 0u) { outc = acol; }

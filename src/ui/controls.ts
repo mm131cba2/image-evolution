@@ -95,7 +95,21 @@ export function buildControls(
     "position:fixed;top:10px;left:10px;width:260px;font-family:sans-serif;font-size:13px;" +
     "color:#ddd;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:10px;";
 
-  // 力学エンジン選択（最上位）。cgl のみ A/B/blend が効く。
+  // 力学ごとの可視性制御: 各行に「どの力学で出すか」を登録し、選択で切り替える。
+  let curDyn: Dynamics = "cgl";
+  let curMode: Mode = initialMode;
+  const tracked: { el: HTMLElement; shown: string; show: (d: Dynamics, m: Mode) => boolean }[] = [];
+  const track = (el: HTMLElement, show: (d: Dynamics, m: Mode) => boolean): void => {
+    tracked.push({ el, shown: el.style.display, show });
+  };
+  const updateVis = (): void => {
+    for (const t of tracked) t.el.style.display = t.show(curDyn, curMode) ? t.shown : "none";
+  };
+  const isCgl = (d: Dynamics): boolean => d === "cgl";
+  const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "quat"; // b,c を使う
+  const usesDiff = (d: Dynamics): boolean => d === "cgl" || d === "chroma" || d === "quat"; // D,dt
+
+  // 力学エンジン選択（最上位・常時）。
   const dynRow = document.createElement("div");
   dynRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
   const dynSel = document.createElement("select");
@@ -112,11 +126,22 @@ export function buildControls(
     dynSel.appendChild(o);
   }
   dynSel.style.flex = "1";
-  dynSel.addEventListener("change", () => cb.onDynamics(dynSel.value as Dynamics));
+  dynSel.addEventListener("change", () => {
+    curDyn = dynSel.value as Dynamics;
+    cb.onDynamics(curDyn);
+    updateVis();
+  });
   dynRow.appendChild(dynSel);
   panel.appendChild(dynRow);
 
-  // モード選択（A=写真を流す / B=場を表示 / blend=混合）＋ blend スライダー。
+  // 調整項目のない力学（gs/lenia）向けのヒント。
+  const hint = document.createElement("div");
+  hint.style.cssText = "color:#9a9;font-size:12px;margin:2px 0;";
+  hint.textContent = "このモードは調整項目がありません（固定パラメータ）";
+  panel.appendChild(hint);
+  track(hint, (d) => d === "grayscott" || d === "lenia");
+
+  // モード選択（cgl のみ・A=写真を流す / B=場を表示 / blend=混合）。
   const modeRow = document.createElement("div");
   modeRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
   const modeSel = document.createElement("select");
@@ -132,10 +157,16 @@ export function buildControls(
     modeSel.appendChild(o);
   }
   modeSel.style.flex = "1";
-  modeSel.addEventListener("change", () => cb.onMode(modeSel.value as Mode));
+  modeSel.addEventListener("change", () => {
+    curMode = modeSel.value as Mode;
+    cb.onMode(curMode);
+    updateVis();
+  });
   modeRow.appendChild(modeSel);
   panel.appendChild(modeRow);
+  track(modeRow, isCgl);
 
+  // blend スライダー（cgl かつ mode=blend のときだけ）。
   {
     const { row: r, value } = row("blend");
     const input = document.createElement("input");
@@ -154,6 +185,7 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
+    track(r, (d, m) => d === "cgl" && m === "blend");
   }
 
   const status = document.createElement("div");
@@ -171,18 +203,24 @@ export function buildControls(
   };
 
   panel.appendChild(status);
+  track(status, usesBC); // 1+bc は b,c を使う力学だけ
+
+  // b,c,D,流速 スライダー（適用範囲ごとに表示）。
+  const sliderShow: Record<string, (d: Dynamics) => boolean> = {
+    b: usesBC, c: usesBC, D: usesDiff, speed: isCgl,
+  };
   for (const [lbl, key] of [
     ["b", "b"],
     ["c", "c"],
     ["D", "D"],
     ["流速", "speed"],
   ] as const) {
-    panel.appendChild(
-      linSlider(lbl, key, p, (v) => {
-        p[key] = v;
-        refresh();
-      }),
-    );
+    const r = linSlider(lbl, key, p, (v) => {
+      p[key] = v;
+      refresh();
+    });
+    panel.appendChild(r);
+    track(r, sliderShow[key]);
   }
 
   // dt は対数スライダー。
@@ -205,10 +243,12 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
+    track(r, usesDiff);
   }
   panel.appendChild(warn);
+  track(warn, usesDiff);
 
-  // 種の種類。
+  // 種の種類（cgl のみ）。
   const seedRow = document.createElement("div");
   seedRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:6px;";
   const seedSel = document.createElement("select");
@@ -226,8 +266,9 @@ export function buildControls(
   seedSel.addEventListener("change", () => cb.onSeedType(seedSel.value as Seed));
   seedRow.appendChild(seedSel);
   panel.appendChild(seedRow);
+  track(seedRow, isCgl);
 
-  // 色の全画面ストロボ（CGL の一様位相回転）を止める。既定 ON。
+  // 色の全画面ストロボ（一様位相回転）を止める（cgl の色表示・quat）。既定 ON。
   const coRow = document.createElement("label");
   coRow.style.cssText = "display:flex;gap:6px;align-items:center;margin-top:6px;cursor:pointer;";
   const coChk = document.createElement("input");
@@ -237,6 +278,7 @@ export function buildControls(
   coRow.appendChild(coChk);
   coRow.appendChild(document.createTextNode("色の回転を止める"));
   panel.appendChild(coRow);
+  track(coRow, usesBC);
 
   // 四元数モードの「元の色味を保つ」強度（色重心を写真に引き戻す・0=自由発展）。
   {
@@ -257,9 +299,10 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
+    track(r, (d) => d === "quat");
   }
 
-  // ボタン列: 画像・リセット・一時停止。
+  // ボタン列: 画像・リセット・一時停止・録画（常時）。
   const btnRow = document.createElement("div");
   btnRow.style.cssText = "display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;";
 
@@ -317,4 +360,5 @@ export function buildControls(
 
   document.body.appendChild(panel);
   refresh();
+  updateVis(); // 初期は cgl の項目だけ表示
 }

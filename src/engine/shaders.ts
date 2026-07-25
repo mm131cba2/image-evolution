@@ -182,8 +182,8 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   // t=0 では写真の色相・彩度がそのまま出る。ψ=0（無彩色・渦の芯）は中立灰。
   let bcol = mix(vec3<f32>(0.5), lutc, clamp(amp / P.ampRef, 0.0, 1.0));
 
-  // A: 逆写像で原本をサンプル
-  let src = fmap[c] / f32(L);
+  // A: 逆写像で原本をサンプル（+0.5 でテクセル中心に合わせる＝半texelずれ防止）
+  let src = (fmap[c] + vec2<f32>(0.5)) / f32(L);
   let acol = textureSample(orig, origSamp, src).rgb;
 
   var outc: vec3<f32>;

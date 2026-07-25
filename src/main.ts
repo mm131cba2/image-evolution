@@ -103,11 +103,11 @@ async function main(): Promise<void> {
   apply();
 
   const loadImage = (file: File): void => {
-    phaseRef = 0; // 写真投入は t=0＝共回転オフセットもリセット（初期色は写真の色）
     void fieldFromFile(file, seedType).then((f) => {
       engine.seedOriginal(f.orig);
       engine.seed(f.psiRe, f.psiIm);
       engine.resetMap();
+      phaseRef = 0; // 場が届いた瞬間に t=0 化（復号待ちの間の累積を捨て初期色を決定的に）
     });
   };
 
@@ -145,13 +145,32 @@ async function main(): Promise<void> {
     },
   });
 
+  // フレームレート非依存: 実時間を貯めて 1/60s ぶんの論理フレームだけ進める。
+  // 60Hz では毎フレーム 1 回（従来と同一）・120Hz では 1 回おき・30Hz では 2 回進み、
+  // 表示装置に依らず同じ速さで時間発展する（ループ書き出しの再現性にも効く）。
   const STEPS_PER_FRAME = 6;
+  const LOGICAL_MS = 1000 / 60;
+  const MAX_CATCHUP = 4; // 背景タブ復帰などの暴走を防ぐ上限
+  let acc = 0;
+  let last = performance.now();
+  const advance = (): void => {
+    engine.stepCGL(STEPS_PER_FRAME);
+    if (coRotate) phaseRef += params.c * params.dt * STEPS_PER_FRAME; // +c·Δt で一様回転を相殺
+    if (mode !== "B") engine.advectMap(); // A / blend のとき写真を流す
+  };
   const loop = (): void => {
+    const now = performance.now();
+    const elapsed = now - last;
+    last = now;
     if (running) {
-      engine.stepCGL(STEPS_PER_FRAME);
-      // 一様回転ぶんだけ表示位相を戻す（dθ/dt=−c なので +c·Δt）
-      if (coRotate) phaseRef += params.c * params.dt * STEPS_PER_FRAME;
-      if (mode !== "B") engine.advectMap(); // A / blend のとき写真を流す
+      acc += Math.min(elapsed, 250); // タブ切替後の巨大 Δt はクランプ
+      let iters = 0;
+      while (acc >= LOGICAL_MS && iters < MAX_CATCHUP) {
+        advance();
+        acc -= LOGICAL_MS;
+        iters++;
+      }
+      if (iters === MAX_CATCHUP) acc = 0; // 追いつけない時は積み残しを捨てる
     }
     engine.setState(params, modeNum(mode), blend, phaseRef);
     engine.render(gpu.context);

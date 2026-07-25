@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { logScale, logScaleInv, stabilityText, needsSmallerDt } from "../../src/ui/controls";
+import { logScale, logScaleInv, stabilityText, needsSmallerDt, diffusionUnstable } from "../../src/ui/controls";
 import type { CGLParams } from "../../src/engine/params";
 
 const P = (over: Partial<CGLParams> = {}): CGLParams => ({
@@ -38,5 +38,17 @@ describe("needsSmallerDt", () => {
     expect(needsSmallerDt(P({ b: 2, c: -1, dt: 0.02 }))).toBe(true);
     expect(needsSmallerDt(P({ b: 2, c: -1, dt: 0.01 }))).toBe(false); // dt 十分小
     expect(needsSmallerDt(P({ b: 0.5, c: 0.5, dt: 0.02 }))).toBe(false); // 安定域
+  });
+});
+
+describe("diffusionUnstable（拡散CFL）", () => {
+  it("既定 D=4,dt=0.02 は安全・D を上げると発散警告", () => {
+    expect(diffusionUnstable(P({ D: 4, dt: 0.02 }))).toBe(false); // 数値実測: 安定
+    expect(diffusionUnstable(P({ D: 8, dt: 0.02 }))).toBe(false); // 実測: まだ安定
+    expect(diffusionUnstable(P({ D: 12, dt: 0.02 }))).toBe(true); // 実測: 発散する
+    expect(diffusionUnstable(P({ D: 16, dt: 0.02 }))).toBe(true);
+  });
+  it("dt を上げても発散を検知", () => {
+    expect(diffusionUnstable(P({ D: 8, dt: 0.05 }))).toBe(true); // CFL≈3.6
   });
 });

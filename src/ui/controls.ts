@@ -25,6 +25,12 @@ export function needsSmallerDt(p: CGLParams): boolean {
   return 1 + p.b * p.c < 0 && p.dt > 0.012;
 }
 
+// 拡散の陽解法 CFL: dt·D·√(1+b²)·8 が ~2 を超えると最高周波数モードが発散する。
+// D を上げる／dt を上げると無警告で NaN 化するのを防ぐ（数値実測: D=12,dt=0.02 で発散）。
+export function diffusionUnstable(p: CGLParams): boolean {
+  return p.dt * p.D * Math.hypot(1, p.b) * 8 > 1.8;
+}
+
 export interface ControlCallbacks {
   onParams: (p: CGLParams) => void;
   onMode: (m: Mode) => void;
@@ -132,7 +138,11 @@ export function buildControls(
   warn.style.cssText = "color:#fc6;font-size:12px;min-height:1em;";
   const refresh = () => {
     status.textContent = stabilityText(p);
-    warn.textContent = needsSmallerDt(p) ? "⚠ 乱流は dt≤0.01 推奨（過増幅を防ぐ）" : "";
+    warn.textContent = diffusionUnstable(p)
+      ? "⚠ D×dt が大きすぎて発散します（D か dt を下げる）"
+      : needsSmallerDt(p)
+        ? "⚠ 乱流は dt≤0.01 推奨（過増幅を防ぐ）"
+        : "";
     cb.onParams({ ...p });
   };
 

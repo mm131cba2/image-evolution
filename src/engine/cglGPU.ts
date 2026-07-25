@@ -31,8 +31,9 @@ export class CGLEngine {
   private origTex: GPUTexture;
   private sampler: GPUSampler;
   private origSampler: GPUSampler;
-  private stepPipelines: GPUComputePipeline[]; // [cgl, grayscott, lenia, chroma]
-  private qbuf: [GPUBuffer, GPUBuffer]; // 四元数場 vec4 のピンポン
+  private stepPipelines: GPUComputePipeline[]; // vec2 力学 [cgl, grayscott, lenia]
+  private qbuf: [GPUBuffer, GPUBuffer]; // vec4 場（chroma=YCbCr / quat）のピンポン
+  private chromaPipeline: GPUComputePipeline; // vec4 色拡散
   private quatPipeline: GPUComputePipeline;
   private quatBG: [GPUBindGroup, GPUBindGroup];
   private meanBuf: GPUBuffer; // 共回転後 Im 重心（vec4）
@@ -46,6 +47,7 @@ export class CGLEngine {
   private dynamics: DynNum = 0;
   private anchor = 0; // 重心アンカー強度（quat・0=自由）
   private m0: [number, number, number] = [0, 0, 0]; // 写真の Im 重心
+  private yrate = 0; // chroma の輝度拡散率（0=Y固定=形保持・>0=Yも溶ける）
 
   constructor(
     private device: GPUDevice,
@@ -107,13 +109,9 @@ export class CGLEngine {
         layout: stepPL,
         compute: { module: device.createShaderModule({ code }), entryPoint: "main" },
       });
-    this.stepPipelines = [
-      mkStep(CGL_STEP_WGSL),
-      mkStep(GRAYSCOTT_WGSL),
-      mkStep(LENIA_WGSL),
-      mkStep(CHROMA_WGSL),
-    ];
-    // 四元数場（vec4）も同じ step レイアウト（storage in/out + uniform）を共有。
+    this.stepPipelines = [mkStep(CGL_STEP_WGSL), mkStep(GRAYSCOTT_WGSL), mkStep(LENIA_WGSL)];
+    // vec4 場（chroma=YCbCr / quat）も同じ step レイアウト（storage in/out + uniform）を共有。
+    this.chromaPipeline = mkStep(CHROMA_WGSL);
     this.quatPipeline = mkStep(QUAT_STEP_WGSL);
     this.quatBG = [
       device.createBindGroup({
@@ -188,6 +186,11 @@ export class CGLEngine {
     this.m0 = m0;
   }
 
+  // chroma の輝度拡散率（0=Y 固定＝形保持・>0=Y も拡散して溶ける）。
+  setChromaYRate(r: number): void {
+    this.yrate = r;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -205,6 +208,7 @@ export class CGLEngine {
     dv.setFloat32(48, this.m0[0], true);
     dv.setFloat32(52, this.m0[1], true);
     dv.setFloat32(56, this.m0[2], true);
+    dv.setFloat32(60, this.yrate, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -264,11 +268,13 @@ export class CGLEngine {
   }
 
   // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
-  // dynamics==4(quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
+  // dynamics>=3(chroma/quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
   stepCGL(times: number): void {
-    const isQuat = this.dynamics === 4;
-    const pipe = isQuat ? this.quatPipeline : this.stepPipelines[this.dynamics];
-    const bgs = isQuat ? this.quatBG : this.computeBG;
+    const isVec4 = this.dynamics >= 3;
+    const pipe = this.dynamics === 4 ? this.quatPipeline
+      : this.dynamics === 3 ? this.chromaPipeline
+      : this.stepPipelines[this.dynamics];
+    const bgs = isVec4 ? this.quatBG : this.computeBG;
     const enc = this.device.createCommandEncoder();
     const wg = Math.ceil(this.L / 8);
     for (let i = 0; i < times; i++) {

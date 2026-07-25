@@ -41,6 +41,7 @@ export interface ControlCallbacks {
   onDynamics: (d: Dynamics) => void;
   onCoRotate: (on: boolean) => void;
   onAnchor: (v: number) => void;
+  onYRate: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -117,7 +118,7 @@ export function buildControls(
     ["cgl", "力学: 複素GL（螺旋波・流れ）"],
     ["grayscott", "力学: 反応拡散（Turing斑点）"],
     ["lenia", "力学: Lenia（連続ライフ）"],
-    ["chroma", "力学: 色差拡散（輝度保持）"],
+    ["chroma", "力学: 色拡散（YCbCr）"],
     ["quat", "力学: 四元数（全色発展）"],
   ] as const) {
     const o = document.createElement("option");
@@ -300,6 +301,28 @@ export function buildControls(
     r.appendChild(value);
     panel.appendChild(r);
     track(r, (d) => d === "quat");
+  }
+
+  // 色拡散(chroma)の輝度拡散率（0=Y固定=形保持・>0=形も溶ける）。
+  {
+    const { row: r, value } = row("輝度");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "0.4";
+    input.style.flex = "1";
+    value.textContent = "0.40";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onYRate(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "chroma");
   }
 
   // ボタン列: 画像・リセット・一時停止・録画（常時）。

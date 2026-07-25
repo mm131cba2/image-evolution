@@ -3,13 +3,13 @@
 //
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
 //   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
-//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:pad  （64 バイト）
+//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate  （64 バイト）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
   dt: f32, ampRef: f32, speed: f32, mode: u32,
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
-  m0x: f32, m0y: f32, m0z: f32, _p3: f32,
+  m0x: f32, m0y: f32, m0z: f32, yrate: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -108,14 +108,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
-// 色差拡散（re=Cb, im=Cr を D·dt·∇² で拡散・輝度 Y は状態に持たない）。
-// CPU 参照 dynamics.ts chromaStep と 1:1。
+// 色拡散（vec4=Y,Cb,Cr,_ を各スカラー拡散）。単一手法(スカラー拡散)で全色パラメータを扱う。
+// 輝度 Y の拡散率だけ yrate 倍にできる（yrate=0 で Y 固定＝形保持・>0 で形も溶ける）。
+// 全チャンネル同率だと RGB ぼかしと等価（拡散は線形で色変換と可換・checks/diffuse-space）。
 export const CHROMA_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
-@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(0) var<storage, read> inBuf: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> P: Params;
-fn at(x: i32, y: i32, L: i32) -> vec2<f32> {
+fn at(x: i32, y: i32, L: i32) -> vec4<f32> {
   return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
 }
 @compute @workgroup_size(8, 8)
@@ -124,9 +125,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
   if (x >= L || y >= L) { return; }
   let c = u32(y * L + x);
-  let s = inBuf[c];
+  let s = inBuf[c]; // (Y, Cb, Cr, _)
   let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * s;
-  outBuf[c] = s + (P.D * P.dt) * lap;
+  let d = P.D * P.dt;
+  // Y=.x は d·yrate、色差 Cb,Cr=.yz は d で拡散（.w は未使用）。
+  outBuf[c] = s + vec4<f32>(d * P.yrate, d, d, d) * lap;
 }
 `;
 
@@ -398,9 +401,9 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     let fi = clamp(psi.x, 0.0, 1.0);
     outc = clamp(mix(origHere * 0.12, origHere * 1.5, fi), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.dynamics == 3u) {
-    // 色差拡散: 輝度は原本・色差は発展した Cb,Cr（写真の形は保ち色だけ滲む）
-    let Y = 0.299 * origHere.r + 0.587 * origHere.g + 0.114 * origHere.b;
-    outc = clamp(ycbcr2rgb(Y, psi.x, psi.y), vec3<f32>(0.0), vec3<f32>(1.0));
+    // 色拡散: 発展した (Y,Cb,Cr) をそのまま表示（Y も yrate>0 で発展する）。
+    let q = quatField[c];
+    outc = clamp(ycbcr2rgb(q.x, q.y, q.z), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.dynamics == 4u) {
     // 四元数（全色発展）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
     var q = quatField[c];

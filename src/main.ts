@@ -125,6 +125,7 @@ async function main(): Promise<void> {
   let phaseRef = 0;
   let anchorStrength = 0.6; // quat「元の色味を保つ」既定（0=自由発展・1=完全に元の重心）
   let quatM0: [number, number, number] = [0, 0, 0]; // 写真の色重心（seed 時に算出）
+  let chromaYRate = 0.4; // chroma 輝度拡散率（0=Y固定=形保持・>0=形も溶ける）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -159,11 +160,11 @@ async function main(): Promise<void> {
       quatM0 = [mx / n, my / n, mz / n];
       engine.setQuatAnchor(anchorStrength, quatM0);
       engine.seedQuat(q4);
+    } else if (dynamics === "chroma") {
+      engine.setChromaYRate(chromaYRate);
+      engine.seedQuat(seedChroma(f.orig, L)); // vec4=(Y,Cb,Cr,0)
     } else {
-      const s =
-        dynamics === "grayscott" ? seedGrayScott(f.orig, L)
-        : dynamics === "lenia" ? seedLenia(f.orig, L)
-        : seedChroma(f.orig, L);
+      const s = dynamics === "grayscott" ? seedGrayScott(f.orig, L) : seedLenia(f.orig, L);
       engine.seed(s.re, s.im);
     }
     engine.resetMap();
@@ -219,6 +220,10 @@ async function main(): Promise<void> {
     onAnchor: (v) => {
       anchorStrength = v;
       engine.setQuatAnchor(anchorStrength, quatM0); // quat の「元の色味を保つ」強度
+    },
+    onYRate: (v) => {
+      chromaYRate = v;
+      engine.setChromaYRate(v); // chroma の輝度拡散率
     },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {

@@ -184,18 +184,19 @@ export function seedQuat(orig: Float32Array, L: number): Float32Array<ArrayBuffe
   return q;
 }
 
-// 色差拡散: re=Cb, im=Cr（sRGB BT.601）。輝度は表示で原本から取るので状態に持たない。
-export function seedChroma(orig: Float32Array, L: number): { re: Float32Array; im: Float32Array } {
+// 色拡散: vec4=(Y, Cb, Cr, 0)（sRGB BT.601）。Y も状態に持ち yrate>0 で拡散させられる。
+export function seedChroma(orig: Float32Array, L: number): Float32Array<ArrayBuffer> {
   const n = L * L;
-  const re = new Float32Array(n);
-  const im = new Float32Array(n);
+  const q = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) {
     const r = linearToSrgb(orig[i * 4]);
     const g = linearToSrgb(orig[i * 4 + 1]);
     const b = linearToSrgb(orig[i * 4 + 2]);
-    const [, cb, cr] = rgbToYCbCr(r, g, b);
-    re[i] = cb;
-    im[i] = cr;
+    const [Y, cb, cr] = rgbToYCbCr(r, g, b);
+    q[i * 4] = Y;
+    q[i * 4 + 1] = cb;
+    q[i * 4 + 2] = cr;
+    q[i * 4 + 3] = 0;
   }
-  return { re, im };
+  return q;
 }

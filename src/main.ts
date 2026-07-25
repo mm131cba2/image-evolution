@@ -86,6 +86,7 @@ async function main(): Promise<void> {
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
   const seedDefault = (): void => {
+    phaseRef = 0; // t=0 に戻す＝共回転オフセットもリセット（初期色を決定的に）
     const re = new Float32Array(L * L);
     const im = new Float32Array(L * L);
     for (let i = 0; i < L * L; i++) {
@@ -102,6 +103,7 @@ async function main(): Promise<void> {
   apply();
 
   const loadImage = (file: File): void => {
+    phaseRef = 0; // 写真投入は t=0＝共回転オフセットもリセット（初期色は写真の色）
     void fieldFromFile(file, seedType).then((f) => {
       engine.seedOriginal(f.orig);
       engine.seed(f.psiRe, f.psiIm);

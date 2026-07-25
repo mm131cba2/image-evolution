@@ -3,18 +3,29 @@
 // その輝度を位相に種付けして時間発展させる。
 
 import { initWebGPU } from "./engine/gpu";
-import { CGLEngine, type ModeNum } from "./engine/cglGPU";
+import { CGLEngine, type ModeNum, type DynNum } from "./engine/cglGPU";
 import { buildCyclicLUT } from "./render/palette";
 import { DEFAULT_CONFIG } from "./config";
-import { imageToField, type Seed, type Field } from "./image/imageToField";
+import {
+  imageToField,
+  seedGrayScott,
+  seedLenia,
+  seedChroma,
+  type Seed,
+  type Field,
+} from "./image/imageToField";
 import { buildControls } from "./ui/controls";
 import type { CGLParams } from "./engine/params";
-import type { Mode } from "./config";
+import type { Mode, Dynamics } from "./config";
 
 const L = DEFAULT_CONFIG.L; // 256
 
 function modeNum(m: Mode): ModeNum {
   return m === "A" ? 0 : m === "B" ? 1 : 2;
+}
+
+function dynNum(d: Dynamics): DynNum {
+  return d === "cgl" ? 0 : d === "grayscott" ? 1 : d === "lenia" ? 2 : 3;
 }
 
 // 画像未選択でもモード A が何か映すための既定原本（滑らかな色のグラデ・線形光 RGBA）。
@@ -77,6 +88,7 @@ async function main(): Promise<void> {
   let mode: Mode = "B";
   let blend = 0.5;
   let seedType: Seed = DEFAULT_CONFIG.seed;
+  let dynamics: Dynamics = DEFAULT_CONFIG.dynamics;
   let lastFile: File | null = null;
   let running = true;
   // 共回転フレーム: CGL の一様位相回転 dθ/dt=−c を表示上で打ち消す（全画面の色ストロボ防止）。
@@ -85,31 +97,48 @@ async function main(): Promise<void> {
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
-  const seedDefault = (): void => {
-    phaseRef = 0; // t=0 に戻す＝共回転オフセットもリセット（初期色を決定的に）
-    const re = new Float32Array(L * L);
-    const im = new Float32Array(L * L);
+  // 画像未選択の既定場（cgl はランダム位相・非cglは既定グラデを種に）。1度だけ生成し固定。
+  const defaultField = (): Field => {
+    const orig = defaultOriginal();
+    const psiRe = new Float32Array(L * L);
+    const psiIm = new Float32Array(L * L);
     for (let i = 0; i < L * L; i++) {
       const th = Math.random() * 2 * Math.PI;
-      re[i] = Math.cos(th);
-      im[i] = Math.sin(th);
+      psiRe[i] = Math.cos(th);
+      psiIm[i] = Math.sin(th);
     }
-    engine.seed(re, im);
+    return { orig, psiRe, psiIm, L };
   };
+  const defaultF = defaultField();
 
-  engine.seedOriginal(defaultOriginal());
-  engine.resetMap();
-  seedDefault();
-  apply();
-
-  const loadImage = (file: File): void => {
-    void fieldFromFile(file, seedType).then((f) => {
-      engine.seedOriginal(f.orig);
+  // 現在の力学に応じて engine に種を投入（写真か既定場の orig から状態を作る）。
+  const seedFromField = (f: Field): void => {
+    engine.seedOriginal(f.orig);
+    if (dynamics === "cgl") {
       engine.seed(f.psiRe, f.psiIm);
-      engine.resetMap();
-      phaseRef = 0; // 場が届いた瞬間に t=0 化（復号待ちの間の累積を捨て初期色を決定的に）
-    });
+    } else {
+      const s =
+        dynamics === "grayscott" ? seedGrayScott(f.orig, L)
+        : dynamics === "lenia" ? seedLenia(f.orig, L)
+        : seedChroma(f.orig, L);
+      engine.seed(s.re, s.im);
+    }
+    engine.resetMap();
+    phaseRef = 0; // t=0 に戻す（共回転オフセットもリセット）
   };
+
+  // 種を作り直す（写真は現 seedType で再取得・未選択は固定の既定場）。
+  const rebuild = (): void => {
+    if (lastFile) {
+      void fieldFromFile(lastFile, seedType).then(seedFromField);
+    } else {
+      seedFromField(defaultF);
+    }
+  };
+
+  engine.setDynamics(dynNum(dynamics));
+  seedFromField(defaultF);
+  apply();
 
   buildControls(DEFAULT_CONFIG.params, mode, blend, {
     onParams: (p) => {
@@ -125,16 +154,20 @@ async function main(): Promise<void> {
       apply();
     },
     onReset: () => {
-      engine.resetMap();
-      if (lastFile) loadImage(lastFile);
-      else seedDefault();
+      rebuild();
     },
     onFile: (file) => {
       lastFile = file;
-      loadImage(file);
+      rebuild();
     },
     onSeedType: (s) => {
       seedType = s;
+      rebuild(); // 種の作り方を変えたら作り直す（cgl のみ効く）
+    },
+    onDynamics: (d) => {
+      dynamics = d;
+      engine.setDynamics(dynNum(d));
+      rebuild(); // 力学に応じて種を作り直す
     },
     onCoRotate: (on) => {
       coRotate = on;
@@ -156,7 +189,8 @@ async function main(): Promise<void> {
   const advance = (): void => {
     engine.stepCGL(STEPS_PER_FRAME);
     if (coRotate) phaseRef += params.c * params.dt * STEPS_PER_FRAME; // +c·Δt で一様回転を相殺
-    if (mode !== "B") engine.advectMap(); // A / blend のとき写真を流す
+    // 写真の移流は cgl の A/blend でのみ（他力学は流れ場を持たない）
+    if (dynamics === "cgl" && mode !== "B") engine.advectMap();
   };
   const loop = (): void => {
     const now = performance.now();

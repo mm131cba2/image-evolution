@@ -4,7 +4,7 @@
 import type { CGLParams } from "../engine/params";
 import { PARAM_RANGES } from "../engine/params";
 import type { Seed } from "../image/imageToField";
-import type { Mode } from "../config";
+import type { Mode, Dynamics } from "../config";
 
 // 対数スケール: t∈[0,1] → [lo,hi]（dt のように桁が広い量に）。
 export function logScale(t: number, lo: number, hi: number): number {
@@ -38,6 +38,7 @@ export interface ControlCallbacks {
   onReset: () => void;
   onFile: (f: File) => void;
   onSeedType: (s: Seed) => void;
+  onDynamics: (d: Dynamics) => void;
   onCoRotate: (on: boolean) => void;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -91,6 +92,26 @@ export function buildControls(
   panel.style.cssText =
     "position:fixed;top:10px;left:10px;width:260px;font-family:sans-serif;font-size:13px;" +
     "color:#ddd;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:10px;";
+
+  // 力学エンジン選択（最上位）。cgl のみ A/B/blend が効く。
+  const dynRow = document.createElement("div");
+  dynRow.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
+  const dynSel = document.createElement("select");
+  for (const [v, t] of [
+    ["cgl", "力学: 複素GL（螺旋波・流れ）"],
+    ["grayscott", "力学: 反応拡散（Turing斑点）"],
+    ["lenia", "力学: Lenia（連続ライフ）"],
+    ["chroma", "力学: 色差拡散（輝度保持）"],
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    dynSel.appendChild(o);
+  }
+  dynSel.style.flex = "1";
+  dynSel.addEventListener("change", () => cb.onDynamics(dynSel.value as Dynamics));
+  dynRow.appendChild(dynSel);
+  panel.appendChild(dynRow);
 
   // モード選択（A=写真を流す / B=場を表示 / blend=混合）＋ blend スライダー。
   const modeRow = document.createElement("div");

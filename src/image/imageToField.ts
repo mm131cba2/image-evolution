@@ -5,7 +5,8 @@
 //  - ダウンサンプルは面積平均（点サンプリングはモアレを作る）。
 //  - 複素種は既定「色に写真」ψ0=OKLab(a,b)（色相→位相・彩度→振幅・checks/color-field.py）。
 
-import { srgbToLinear, luminance709, linearToOklab } from "../color";
+import { srgbToLinear, linearToSrgb, luminance709, linearToOklab } from "../color";
+import { rgbToYCbCr } from "../engine/dynamics";
 
 // ImageData 互換の構造型（テストでは手組みオブジェクトを渡せる＝jsdom 不要）。
 export interface ImageLike {
@@ -130,4 +131,46 @@ export function imageToField(img: ImageLike, L: number, seed: Seed = "color"): F
     }
   }
   return { orig, psiRe, psiIm, L };
+}
+
+// --- 力学別の種（orig=線形光 RGBA L*L*4 から状態 re/im を作る） ----------------
+
+// Gray-Scott: u=1−0.5·輝度, v=0.25·輝度（写真の明部に種を撒く）。
+export function seedGrayScott(orig: Float32Array, L: number): { re: Float32Array; im: Float32Array } {
+  const n = L * L;
+  const re = new Float32Array(n);
+  const im = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const m = luminance709(orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2]);
+    re[i] = 1 - 0.5 * m;
+    im[i] = 0.25 * m;
+  }
+  return { re, im };
+}
+
+// Lenia: u=輝度 ∈ [0,1]（im は未使用）。
+export function seedLenia(orig: Float32Array, L: number): { re: Float32Array; im: Float32Array } {
+  const n = L * L;
+  const re = new Float32Array(n);
+  const im = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    re[i] = Math.min(1, Math.max(0, luminance709(orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2])));
+  }
+  return { re, im };
+}
+
+// 色差拡散: re=Cb, im=Cr（sRGB BT.601）。輝度は表示で原本から取るので状態に持たない。
+export function seedChroma(orig: Float32Array, L: number): { re: Float32Array; im: Float32Array } {
+  const n = L * L;
+  const re = new Float32Array(n);
+  const im = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = linearToSrgb(orig[i * 4]);
+    const g = linearToSrgb(orig[i * 4 + 1]);
+    const b = linearToSrgb(orig[i * 4 + 2]);
+    const [, cb, cr] = rgbToYCbCr(r, g, b);
+    re[i] = cb;
+    im[i] = cr;
+  }
+  return { re, im };
 }

@@ -2,12 +2,21 @@
 // ψ を storage buffer(vec2) のピンポンで更新し、逆写像 map で原本を流す（A）／OKLCh で描く（B）。
 // 数値は CPU 参照 src/engine/cglStep.ts と同一（WGSL は shaders.ts）。
 
-import { CGL_STEP_WGSL, ADVECT_WGSL, ADVECT_MC2_WGSL, DISPLAY_WGSL } from "./shaders";
+import {
+  CGL_STEP_WGSL,
+  GRAYSCOTT_WGSL,
+  LENIA_WGSL,
+  CHROMA_WGSL,
+  ADVECT_WGSL,
+  ADVECT_MC2_WGSL,
+  DISPLAY_WGSL,
+} from "./shaders";
 import { linearToSrgb } from "../color";
 import type { CGLParams } from "./params";
 
 const PARAMS_BYTES = 48;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
+export type DynNum = 0 | 1 | 2 | 3; // 0=cgl 1=grayscott 2=lenia 3=chroma
 
 export class CGLEngine {
   private cur = 0; // psi parity（最新）
@@ -20,12 +29,13 @@ export class CGLEngine {
   private origTex: GPUTexture;
   private sampler: GPUSampler;
   private origSampler: GPUSampler;
-  private computePipeline: GPUComputePipeline;
+  private stepPipelines: GPUComputePipeline[]; // [cgl, grayscott, lenia, chroma]
   private advectPipeline: GPUComputePipeline;
   private advectPipeline2: GPUComputePipeline;
   private renderPipeline: GPURenderPipeline;
   private computeBG: [GPUBindGroup, GPUBindGroup];
   private paramsHost = new ArrayBuffer(PARAMS_BYTES);
+  private dynamics: DynNum = 0;
 
   constructor(
     private device: GPUDevice,
@@ -66,15 +76,31 @@ export class CGLEngine {
       addressModeV: "clamp-to-edge",
     });
 
-    const stepMod = device.createShaderModule({ code: CGL_STEP_WGSL });
     const advMod = device.createShaderModule({ code: ADVECT_WGSL });
     const adv2Mod = device.createShaderModule({ code: ADVECT_MC2_WGSL });
     const dispMod = device.createShaderModule({ code: DISPLAY_WGSL });
 
-    this.computePipeline = device.createComputePipeline({
-      layout: "auto",
-      compute: { module: stepMod, entryPoint: "main" },
+    // 全力学ステップは同一バインディング（in 読取/out 書込/params）＝共有レイアウトで
+    // 1 組のバインドグループを使い回す（auto だとパイプライン毎に非互換になる）。
+    const stepBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      ],
     });
+    const stepPL = device.createPipelineLayout({ bindGroupLayouts: [stepBGL] });
+    const mkStep = (code: string) =>
+      device.createComputePipeline({
+        layout: stepPL,
+        compute: { module: device.createShaderModule({ code }), entryPoint: "main" },
+      });
+    this.stepPipelines = [
+      mkStep(CGL_STEP_WGSL),
+      mkStep(GRAYSCOTT_WGSL),
+      mkStep(LENIA_WGSL),
+      mkStep(CHROMA_WGSL),
+    ];
     this.advectPipeline = device.createComputePipeline({
       layout: "auto",
       compute: { module: advMod, entryPoint: "main" },
@@ -90,10 +116,9 @@ export class CGLEngine {
       primitive: { topology: "triangle-list" },
     });
 
-    const cl = this.computePipeline.getBindGroupLayout(0);
     const mkCompute = (inB: GPUBuffer, outB: GPUBuffer) =>
       device.createBindGroup({
-        layout: cl,
+        layout: stepBGL,
         entries: [
           { binding: 0, resource: { buffer: inB } },
           { binding: 1, resource: { buffer: outB } },
@@ -103,6 +128,10 @@ export class CGLEngine {
     this.computeBG = [mkCompute(this.buffers[0], this.buffers[1]), mkCompute(this.buffers[1], this.buffers[0])];
 
     this.resetMap();
+  }
+
+  setDynamics(d: DynNum): void {
+    this.dynamics = d;
   }
 
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
@@ -117,6 +146,7 @@ export class CGLEngine {
     dv.setUint32(28, mode, true);
     dv.setFloat32(32, blend, true);
     dv.setFloat32(36, phaseRef, true);
+    dv.setUint32(40, this.dynamics, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -159,12 +189,14 @@ export class CGLEngine {
     this.mapCur = 0;
   }
 
+  // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
   stepCGL(times: number): void {
+    const pipe = this.stepPipelines[this.dynamics];
     const enc = this.device.createCommandEncoder();
     const wg = Math.ceil(this.L / 8);
     for (let i = 0; i < times; i++) {
       const pass = enc.beginComputePass();
-      pass.setPipeline(this.computePipeline);
+      pass.setPipeline(pipe);
       pass.setBindGroup(0, this.computeBG[this.cur]);
       pass.dispatchWorkgroups(wg, wg);
       pass.end();

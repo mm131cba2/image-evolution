@@ -7,12 +7,17 @@ import type { Seed } from "./image/imageToField";
 // A=写真を流す(flow) / B=場を OKLCh で表示(field) / blend=A↔B を混合。
 export type Mode = "A" | "B" | "blend";
 
+// 力学エンジン: cgl=複素GL(螺旋波/乱流) / grayscott=反応拡散(Turing) /
+// lenia=連続ライフ / chroma=色差拡散(輝度保持)。mode(A/B/blend) は cgl のみ有効。
+export type Dynamics = "cgl" | "grayscott" | "lenia" | "chroma";
+
 export interface AppConfig {
   L: number;
   params: CGLParams;
   mode: Mode;
   blend: number; // 0=A .. 1=B（mode="blend" のときだけ効く）
   seed: Seed; // 複素種の作り方
+  dynamics: Dynamics;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -21,10 +26,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   mode: "A",
   blend: 0.5,
   seed: "color", // 写真の色をそのまま場に（色相→位相・彩度→振幅）
+  dynamics: "cgl",
 };
 
 const MODES: readonly Mode[] = ["A", "B", "blend"];
 const SEEDS: readonly Seed[] = ["color", "phase", "amp"];
+const DYNAMICS: readonly Dynamics[] = ["cgl", "grayscott", "lenia", "chroma"];
 
 function clampL(v: unknown): number {
   const n = typeof v === "number" ? v : NaN;
@@ -46,6 +53,7 @@ export function normalizeConfig(raw: Partial<AppConfig> | null | undefined): App
     mode: MODES.includes(r.mode as Mode) ? (r.mode as Mode) : DEFAULT_CONFIG.mode,
     blend: clamp01(r.blend, DEFAULT_CONFIG.blend),
     seed: SEEDS.includes(r.seed as Seed) ? (r.seed as Seed) : DEFAULT_CONFIG.seed,
+    dynamics: DYNAMICS.includes(r.dynamics as Dynamics) ? (r.dynamics as Dynamics) : DEFAULT_CONFIG.dynamics,
   };
 }
 

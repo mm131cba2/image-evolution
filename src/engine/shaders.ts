@@ -2,12 +2,12 @@
 // 複素場 ψ は array<vec2<f32>>（x=Re, y=Im）。境界は壁（反射＝インデックス clamp）。
 //
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
-//   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef 40..:pad
+//   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef 40:dynamics(u32) 44:pad
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
   dt: f32, ampRef: f32, speed: f32, mode: u32,
-  blend: f32, phaseRef: f32, _p1: f32, _p2: f32,
+  blend: f32, phaseRef: f32, dynamics: u32, _p2: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -41,6 +41,90 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     r + P.dt * (r + diffRe + nlRe),
     m + P.dt * (m + diffIm + nlIm),
   );
+}
+`;
+
+// Gray-Scott 反応拡散（re=u, im=v ∈ [0,1]）。CPU 参照 dynamics.ts grayScottStep と 1:1。
+export const GRAYSCOTT_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn at(x: i32, y: i32, L: i32) -> vec2<f32> {
+  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
+}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let s = inBuf[c];
+  let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * s;
+  let u = s.x; let v = s.y;
+  let uvv = u * v * v;
+  let Du = 0.16; let Dv = 0.08; let F = 0.037; let k = 0.06; let dt = 1.0;
+  outBuf[c] = vec2<f32>(
+    u + dt * (Du * lap.x - uvv + F * (1.0 - u)),
+    v + dt * (Dv * lap.y + uvv - (F + k) * v),
+  );
+}
+`;
+
+// Asymptotic Lenia（re=u ∈ [0,1]・指数オイラー・自己正規化ガウス殻カーネル）。
+// CPU 参照 dynamics.ts leniaStep と 1:1（mu,sigma,R,kr0,kw,dt を一致させること）。
+export const LENIA_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn uAt(x: i32, y: i32, L: i32) -> f32 {
+  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))].x;
+}
+fn bell(x: f32, m: f32, s: f32) -> f32 { let d = (x - m) / s; return exp(-0.5 * d * d); }
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let R = 8; let mu = 0.15; let sigma = 0.017; let kr0 = 0.5; let kw = 0.15; let dt = 0.3;
+  var accWU = 0.0; var accW = 0.0;
+  for (var dy = -R; dy <= R; dy = dy + 1) {
+    for (var dx = -R; dx <= R; dx = dx + 1) {
+      let r = sqrt(f32(dx*dx + dy*dy)) / f32(R);
+      if (r > 1.0 || r == 0.0) { continue; }
+      let w = bell(r, kr0, kw);
+      accWU = accWU + w * uAt(x + dx, y + dy, L);
+      accW = accW + w;
+    }
+  }
+  let pot = select(0.0, accWU / accW, accW > 0.0);
+  let g = bell(pot, mu, sigma);
+  let decay = exp(-dt);
+  let u = inBuf[u32(y * L + x)].x;
+  outBuf[u32(y * L + x)] = vec2<f32>(decay * u + (1.0 - decay) * g, 0.0);
+}
+`;
+
+// 色差拡散（re=Cb, im=Cr を D·dt·∇² で拡散・輝度 Y は状態に持たない）。
+// CPU 参照 dynamics.ts chromaStep と 1:1。
+export const CHROMA_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn at(x: i32, y: i32, L: i32) -> vec2<f32> {
+  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
+}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let s = inBuf[c];
+  let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * s;
+  outBuf[c] = s + (P.D * P.dt) * lap;
 }
 `;
 
@@ -161,6 +245,23 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
   return vec4<f32>(p[vi], 0.0, 1.0);
 }
 
+// Gray-Scott 用 逐次カラーマップ（暗→ティール→白）。
+fn cmapGS(t0: f32) -> vec3<f32> {
+  let t = clamp(t0, 0.0, 1.0);
+  let lo = mix(vec3<f32>(0.02, 0.05, 0.10), vec3<f32>(0.10, 0.72, 0.62), smoothstep(0.0, 0.5, t));
+  return mix(lo, vec3<f32>(0.96, 0.98, 0.92), smoothstep(0.5, 1.0, t));
+}
+// Lenia 用 カラーマップ（暗→緑→黄・生命的）。
+fn cmapLenia(t0: f32) -> vec3<f32> {
+  let t = clamp(t0, 0.0, 1.0);
+  let lo = mix(vec3<f32>(0.0, 0.0, 0.05), vec3<f32>(0.10, 0.42, 0.16), smoothstep(0.0, 0.4, t));
+  return mix(lo, vec3<f32>(0.92, 0.96, 0.42), smoothstep(0.4, 1.0, t));
+}
+// BT.601 YCbCr→sRGB（dynamics.ts yCbCrToRgb と一致）。
+fn ycbcr2rgb(Y: f32, Cb: f32, Cr: f32) -> vec3<f32> {
+  return vec3<f32>(Y + 1.402 * Cr, Y - 0.344136 * Cb - 0.714136 * Cr, Y + 1.772 * Cb);
+}
+
 @fragment
 fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   let L = i32(P.L);
@@ -185,9 +286,22 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   // A: 逆写像で原本をサンプル（+0.5 でテクセル中心に合わせる＝半texelずれ防止）
   let src = (fmap[c] + vec2<f32>(0.5)) / f32(L);
   let acol = textureSample(orig, origSamp, src).rgb;
+  // chroma 用: 原本を同位置（恒等）でサンプルし輝度 Y を取る（移流しない）。
+  let idc = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(L);
+  let origHere = textureSample(orig, origSamp, idc).rgb;
 
   var outc: vec3<f32>;
-  if (P.mode == 1u) { outc = bcol; }
+  if (P.dynamics == 1u) {
+    // Gray-Scott: v(=state.y) を逐次カラーマップ（v≈0..0.4 を [0,1] へ）
+    outc = cmapGS(psi.y / 0.4);
+  } else if (P.dynamics == 2u) {
+    // Lenia: u(=state.x) を生命的カラーマップ
+    outc = cmapLenia(psi.x);
+  } else if (P.dynamics == 3u) {
+    // 色差拡散: 輝度は原本・色差は発展した Cb,Cr（写真の形は保ち色だけ滲む）
+    let Y = 0.299 * origHere.r + 0.587 * origHere.g + 0.114 * origHere.b;
+    outc = clamp(ycbcr2rgb(Y, psi.x, psi.y), vec3<f32>(0.0), vec3<f32>(1.0));
+  } else if (P.mode == 1u) { outc = bcol; }
   else if (P.mode == 0u) { outc = acol; }
   else { outc = mix(acol, bcol, P.blend); }
   return vec4<f32>(outc, 1.0);

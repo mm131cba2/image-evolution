@@ -41,6 +41,7 @@ export interface ControlCallbacks {
   onDynamics: (d: Dynamics) => void;
   onCoRotate: (on: boolean) => void;
   onAnchor: (v: number) => void;
+  onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
 
@@ -287,9 +288,31 @@ export function buildControls(
     pause.textContent = cb.onTogglePause() ? "⏸" : "▶";
   });
 
+  // 録画: WebM をダウンロード（秒数は隣の入力・既定 8）。
+  const rec = document.createElement("button");
+  rec.textContent = "⏺ 録画";
+  rec.style.cursor = "pointer";
+  const secInput = document.createElement("input");
+  secInput.type = "number";
+  secInput.min = "1";
+  secInput.max = "60";
+  secInput.value = "8";
+  secInput.title = "録画秒数";
+  secInput.style.cssText = "width:3em;";
+  rec.addEventListener("click", () => {
+    if (rec.disabled) return;
+    rec.disabled = true;
+    const secs = Math.min(60, Math.max(1, parseInt(secInput.value) || 8));
+    void cb
+      .onRecord(secs, (remaining) => { rec.textContent = `⏺ ${remaining}s`; })
+      .finally(() => { rec.textContent = "⏺ 録画"; rec.disabled = false; });
+  });
+
   btnRow.appendChild(fileLabel);
   btnRow.appendChild(reset);
   btnRow.appendChild(pause);
+  btnRow.appendChild(rec);
+  btnRow.appendChild(secInput);
   panel.appendChild(btnRow);
 
   document.body.appendChild(panel);

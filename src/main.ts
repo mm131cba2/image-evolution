@@ -44,6 +44,34 @@ function defaultOriginal(): Float32Array {
   return orig;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// canvas を WebM 録画してダウンロード（依存ゼロ・MediaRecorder）。
+async function recordCanvas(
+  canvas: HTMLCanvasElement,
+  seconds: number,
+  onTick: (remaining: number) => void,
+): Promise<void> {
+  const stream = canvas.captureStream(30);
+  const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+    ? "video/webm;codecs=vp9"
+    : "video/webm";
+  const chunks: Blob[] = [];
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  const stopped = new Promise<void>((res) => { rec.onstop = () => res(); });
+  rec.start();
+  for (let t = seconds; t > 0; t--) { onTick(t); await sleep(1000); }
+  rec.stop();
+  await stopped;
+  const url = URL.createObjectURL(new Blob(chunks, { type: "video/webm" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `evolution-${Date.now()}.webm`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function overlay(msg: string): void {
   const d = document.createElement("div");
   d.style.cssText =
@@ -192,6 +220,7 @@ async function main(): Promise<void> {
       anchorStrength = v;
       engine.setQuatAnchor(anchorStrength, quatM0); // quat の「元の色味を保つ」強度
     },
+    onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {
       running = !running;
       return running;

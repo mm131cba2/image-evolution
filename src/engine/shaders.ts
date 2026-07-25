@@ -2,12 +2,14 @@
 // 複素場 ψ は array<vec2<f32>>（x=Re, y=Im）。境界は壁（反射＝インデックス clamp）。
 //
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
-//   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef 40:dynamics(u32) 44:pad
+//   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
+//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:pad  （64 バイト）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
   dt: f32, ampRef: f32, speed: f32, mode: u32,
-  blend: f32, phaseRef: f32, dynamics: u32, _p2: f32,
+  blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
+  m0x: f32, m0y: f32, m0z: f32, _p3: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -166,6 +168,48 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// 四元数場の「共回転後 Im 重心（平均色）」を 1 ワークグループで縮約。表示の再センタ用。
+export const QUAT_MEAN_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> qin: array<vec4<f32>>;
+@group(0) @binding(1) var<uniform> P: Params;
+@group(0) @binding(2) var<storage, read_write> meanOut: array<vec4<f32>>;
+var<workgroup> partial: array<vec3<f32>, 256>;
+fn qmulM(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+    a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+    a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+    a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x,
+  );
+}
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let n = P.L * P.L;
+  let tid = lid.x;
+  let s3 = 0.57735027;
+  let rot = vec4<f32>(cos(P.phaseRef), sin(P.phaseRef)*s3, sin(P.phaseRef)*s3, sin(P.phaseRef)*s3);
+  var acc = vec3<f32>(0.0, 0.0, 0.0);
+  var i = tid;
+  loop {
+    if (i >= n) { break; }
+    let qc = qmulM(rot, qin[i]);
+    acc = acc + qc.yzw;
+    i = i + 256u;
+  }
+  partial[tid] = acc;
+  workgroupBarrier();
+  var stride = 128u;
+  loop {
+    if (stride == 0u) { break; }
+    if (tid < stride) { partial[tid] = partial[tid] + partial[tid + stride]; }
+    workgroupBarrier();
+    stride = stride / 2u;
+  }
+  if (tid == 0u) { meanOut[0] = vec4<f32>(partial[0] / f32(n), 0.0); }
+}
+`;
+
 // モード A の移流: 逆写像（原本をどこから引くか）を ψ 由来の速度で 1 ステップ後退。
 // v = speed·∇⊥Im(ψ)（非圧縮・非往復）。v1 は単純 semi-Lagrangian（MacCormack 上位互換は後日）。
 export const ADVECT_WGSL = /* wgsl */ `
@@ -277,6 +321,7 @@ ${PARAMS_STRUCT}
 @group(0) @binding(5) var orig: texture_2d<f32>;                    // 原本(sRGB)
 @group(0) @binding(6) var origSamp: sampler;
 @group(0) @binding(7) var<storage, read> quatField: array<vec4<f32>>; // 四元数場 q=(w,x,y,z)
+@group(0) @binding(8) var<storage, read> quatMean: array<vec4<f32>>;  // 共回転後 Im 重心
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -363,12 +408,17 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     // 共回転: exp(phaseRef·I)⊗q で均質左回転を相殺（phaseRef=0 なら回る）。
     let rot = vec4<f32>(cos(P.phaseRef), sin(P.phaseRef) * s3, sin(P.phaseRef) * s3, sin(P.phaseRef) * s3);
     q = qmulD(rot, q);
-    let Ld = clamp(0.5 + 0.5 * q.y, 0.0, 1.0);        // 明度（純虚 x）
+    // 重心調整: 発展で色分布の重心が写真からズレる（アトラクタが彩度を膨らませる）。
+    // anchor だけ現在の重心 mean を写真の重心 m0 に引き戻す（元の色味を保つ・0=自由）。
+    let mean = quatMean[0].xyz;
+    let m0 = vec3<f32>(P.m0x, P.m0y, P.m0z);
+    let im = q.yzw - P.anchor * (mean - m0);
+    let Ld = clamp(0.5 + 0.5 * im.x, 0.0, 1.0);        // 明度（純虚 x）
     // 明度の端(黒/白)は sRGB 域が狭くクリップ→ネオン化するので彩度を絞る（域内に収め
     // ケバさを抑える）。ミッドトーンで最大・両端で 0 に落とす。
     let taper = 1.0 - (2.0 * Ld - 1.0) * (2.0 * Ld - 1.0);
     let S = 0.14 * taper;
-    let lin = oklab2lin(Ld, S * q.z, S * q.w);
+    let lin = oklab2lin(Ld, S * im.y, S * im.z);
     outc = vec3<f32>(lin2srgb1(lin.r), lin2srgb1(lin.g), lin2srgb1(lin.b));
   } else if (P.mode == 1u) { outc = bcol; }
   else if (P.mode == 0u) { outc = acol; }

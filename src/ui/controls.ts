@@ -40,6 +40,7 @@ export interface ControlCallbacks {
   onSeedType: (s: Seed) => void;
   onDynamics: (d: Dynamics) => void;
   onCoRotate: (on: boolean) => void;
+  onAnchor: (v: number) => void;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
 
@@ -235,6 +236,27 @@ export function buildControls(
   coRow.appendChild(coChk);
   coRow.appendChild(document.createTextNode("色の回転を止める"));
   panel.appendChild(coRow);
+
+  // 四元数モードの「元の色味を保つ」強度（色重心を写真に引き戻す・0=自由発展）。
+  {
+    const { row: r, value } = row("元色");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "0.6";
+    input.style.flex = "1";
+    value.textContent = "0.60";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onAnchor(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+  }
 
   // ボタン列: 画像・リセット・一時停止。
   const btnRow = document.createElement("div");

@@ -95,6 +95,8 @@ async function main(): Promise<void> {
   // 共回転フレーム: CGL の一様位相回転 dθ/dt=−c を表示上で打ち消す（全画面の色ストロボ防止）。
   let coRotate = true;
   let phaseRef = 0;
+  let anchorStrength = 0.6; // quat「元の色味を保つ」既定（0=自由発展・1=完全に元の重心）
+  let quatM0: [number, number, number] = [0, 0, 0]; // 写真の色重心（seed 時に算出）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -121,7 +123,14 @@ async function main(): Promise<void> {
     if (dynamics === "cgl") {
       engine.seed(f.psiRe, f.psiIm);
     } else if (dynamics === "quat") {
-      engine.seedQuat(seedQuat(f.orig, L));
+      const q4 = seedQuat(f.orig, L);
+      // 写真の色重心 m0（純虚部 Im の平均）。表示の再センタの基準。
+      let mx = 0, my = 0, mz = 0;
+      const n = L * L;
+      for (let i = 0; i < n; i++) { mx += q4[i * 4 + 1]; my += q4[i * 4 + 2]; mz += q4[i * 4 + 3]; }
+      quatM0 = [mx / n, my / n, mz / n];
+      engine.setQuatAnchor(anchorStrength, quatM0);
+      engine.seedQuat(q4);
     } else {
       const s =
         dynamics === "grayscott" ? seedGrayScott(f.orig, L)
@@ -179,6 +188,10 @@ async function main(): Promise<void> {
     onCoRotate: (on) => {
       coRotate = on;
     },
+    onAnchor: (v) => {
+      anchorStrength = v;
+      engine.setQuatAnchor(anchorStrength, quatM0); // quat の「元の色味を保つ」強度
+    },
     onTogglePause: () => {
       running = !running;
       return running;
@@ -218,6 +231,7 @@ async function main(): Promise<void> {
       if (iters === MAX_CATCHUP) acc = 0; // 追いつけない時は積み残しを捨てる
     }
     engine.setState(params, modeNum(mode), blend, phaseRef);
+    if (dynamics === "quat") engine.computeQuatMean(); // 重心を更新してから描画
     engine.render(gpu.context);
     requestAnimationFrame(loop);
   };

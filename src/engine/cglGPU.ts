@@ -8,6 +8,7 @@ import {
   LENIA_WGSL,
   CHROMA_WGSL,
   QUAT_STEP_WGSL,
+  QUAT_MEAN_WGSL,
   ADVECT_WGSL,
   ADVECT_MC2_WGSL,
   DISPLAY_WGSL,
@@ -15,7 +16,7 @@ import {
 import { linearToSrgb } from "../color";
 import type { CGLParams } from "./params";
 
-const PARAMS_BYTES = 48;
+const PARAMS_BYTES = 64;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
 export type DynNum = 0 | 1 | 2 | 3 | 4; // 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat
 
@@ -34,12 +35,17 @@ export class CGLEngine {
   private qbuf: [GPUBuffer, GPUBuffer]; // 四元数場 vec4 のピンポン
   private quatPipeline: GPUComputePipeline;
   private quatBG: [GPUBindGroup, GPUBindGroup];
+  private meanBuf: GPUBuffer; // 共回転後 Im 重心（vec4）
+  private quatMeanPipeline: GPUComputePipeline;
+  private quatMeanBG: [GPUBindGroup, GPUBindGroup];
   private advectPipeline: GPUComputePipeline;
   private advectPipeline2: GPUComputePipeline;
   private renderPipeline: GPURenderPipeline;
   private computeBG: [GPUBindGroup, GPUBindGroup];
   private paramsHost = new ArrayBuffer(PARAMS_BYTES);
   private dynamics: DynNum = 0;
+  private anchor = 0; // 重心アンカー強度（quat・0=自由）
+  private m0: [number, number, number] = [0, 0, 0]; // 写真の Im 重心
 
   constructor(
     private device: GPUDevice,
@@ -54,6 +60,7 @@ export class CGLEngine {
     this.maps = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
     this.mapTmp = mkStorage(n * 2 * 4);
     this.qbuf = [mkStorage(n * 4 * 4), mkStorage(n * 4 * 4)]; // vec4
+    this.meanBuf = mkStorage(4 * 4); // vec4（Im 重心）
 
     this.paramsBuf = device.createBuffer({
       size: PARAMS_BYTES,
@@ -126,6 +133,22 @@ export class CGLEngine {
         ],
       }),
     ];
+    // 重心縮約（qbuf[cur] → meanBuf）。1 ワークグループ・auto レイアウト。
+    this.quatMeanPipeline = device.createComputePipeline({
+      layout: "auto",
+      compute: { module: device.createShaderModule({ code: QUAT_MEAN_WGSL }), entryPoint: "main" },
+    });
+    const mml = this.quatMeanPipeline.getBindGroupLayout(0);
+    const mkMean = (qb: GPUBuffer): GPUBindGroup =>
+      device.createBindGroup({
+        layout: mml,
+        entries: [
+          { binding: 0, resource: { buffer: qb } },
+          { binding: 1, resource: { buffer: this.paramsBuf } },
+          { binding: 2, resource: { buffer: this.meanBuf } },
+        ],
+      });
+    this.quatMeanBG = [mkMean(this.qbuf[0]), mkMean(this.qbuf[1])];
     this.advectPipeline = device.createComputePipeline({
       layout: "auto",
       compute: { module: advMod, entryPoint: "main" },
@@ -159,6 +182,12 @@ export class CGLEngine {
     this.dynamics = d;
   }
 
+  // 重心アンカー（quat 全色発展の「元の色味を保つ」強度と写真の Im 重心）。
+  setQuatAnchor(strength: number, m0: [number, number, number]): void {
+    this.anchor = strength;
+    this.m0 = m0;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -172,6 +201,10 @@ export class CGLEngine {
     dv.setFloat32(32, blend, true);
     dv.setFloat32(36, phaseRef, true);
     dv.setUint32(40, this.dynamics, true);
+    dv.setFloat32(44, this.anchor, true);
+    dv.setFloat32(48, this.m0[0], true);
+    dv.setFloat32(52, this.m0[1], true);
+    dv.setFloat32(56, this.m0[2], true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -188,6 +221,17 @@ export class CGLEngine {
   // 四元数場に種を投入（q4 = n*4 の interleave (w,x,y,z)）。
   seedQuat(q4: Float32Array<ArrayBuffer>): void {
     this.device.queue.writeBuffer(this.qbuf[this.cur], 0, q4);
+  }
+
+  // 四元数場の共回転後 Im 重心を meanBuf に縮約（表示の再センタ用・毎フレーム quat 時）。
+  computeQuatMean(): void {
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.quatMeanPipeline);
+    pass.setBindGroup(0, this.quatMeanBG[this.cur]);
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
   }
 
   // 原本テクスチャを投入（orig は線形光 RGBA・L*L*4）。表示は sRGB で行うので変換して格納。
@@ -293,6 +337,7 @@ export class CGLEngine {
         { binding: 5, resource: this.origTex.createView() },
         { binding: 6, resource: this.origSampler },
         { binding: 7, resource: { buffer: this.qbuf[this.cur] } },
+        { binding: 8, resource: { buffer: this.meanBuf } },
       ],
     });
     const enc = this.device.createCommandEncoder();

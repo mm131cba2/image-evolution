@@ -110,6 +110,9 @@ async function main(): Promise<void> {
     return { orig, psiRe, psiIm, L };
   };
   const defaultF = defaultField();
+  // 直近に読み込んだ場（写真 or 既定）。力学/リセット切替は再デコードせず即座に再シード
+  // する（切替時の非同期デコード待ちに古い状態を別力学が食う崩れを防ぐ）。
+  let currentField: Field = defaultF;
 
   // 現在の力学に応じて engine に種を投入（写真か既定場の orig から状態を作る）。
   const seedFromField = (f: Field): void => {
@@ -126,18 +129,18 @@ async function main(): Promise<void> {
     engine.resetMap();
     phaseRef = 0; // t=0 に戻す（共回転オフセットもリセット）
   };
+  const reseed = (): void => seedFromField(currentField);
 
-  // 種を作り直す（写真は現 seedType で再取得・未選択は固定の既定場）。
-  const rebuild = (): void => {
-    if (lastFile) {
-      void fieldFromFile(lastFile, seedType).then(seedFromField);
-    } else {
-      seedFromField(defaultF);
-    }
+  // 写真を読み込む（seedType/dynamics 変更で psi の作り直しが要る時だけ再デコード）。
+  const loadFile = (file: File): void => {
+    void fieldFromFile(file, seedType).then((f) => {
+      currentField = f;
+      seedFromField(f);
+    });
   };
 
   engine.setDynamics(dynNum(dynamics));
-  seedFromField(defaultF);
+  reseed();
   apply();
 
   buildControls(DEFAULT_CONFIG.params, mode, blend, {
@@ -154,20 +157,21 @@ async function main(): Promise<void> {
       apply();
     },
     onReset: () => {
-      rebuild();
+      reseed(); // 保持中の場から即座に（決定的）
     },
     onFile: (file) => {
       lastFile = file;
-      rebuild();
+      loadFile(file);
     },
     onSeedType: (s) => {
       seedType = s;
-      rebuild(); // 種の作り方を変えたら作り直す（cgl のみ効く）
+      if (lastFile) loadFile(lastFile); // psi の作り直しに再デコードが要る（cgl のみ効く）
+      else reseed();
     },
     onDynamics: (d) => {
       dynamics = d;
       engine.setDynamics(dynNum(d));
-      rebuild(); // 力学に応じて種を作り直す
+      reseed(); // 保持中の場から力学に応じて即再シード（非同期デコード待ちを挟まない）
     },
     onCoRotate: (on) => {
       coRotate = on;
@@ -181,14 +185,18 @@ async function main(): Promise<void> {
   // フレームレート非依存: 実時間を貯めて 1/60s ぶんの論理フレームだけ進める。
   // 60Hz では毎フレーム 1 回（従来と同一）・120Hz では 1 回おき・30Hz では 2 回進み、
   // 表示装置に依らず同じ速さで時間発展する（ループ書き出しの再現性にも効く）。
-  const STEPS_PER_FRAME = 6;
   const LOGICAL_MS = 1000 / 60;
   const MAX_CATCHUP = 4; // 背景タブ復帰などの暴走を防ぐ上限
+  // 力学ごとの 1 論理フレーム当たりステップ数（cgl=標準／lenia=重いので少なめ／
+  // chroma=拡散が遅く見えるので多め／grayscott=見やすくやや少なめ）。
+  const stepsFor = (d: Dynamics): number =>
+    d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3 : 6;
   let acc = 0;
   let last = performance.now();
   const advance = (): void => {
-    engine.stepCGL(STEPS_PER_FRAME);
-    if (coRotate) phaseRef += params.c * params.dt * STEPS_PER_FRAME; // +c·Δt で一様回転を相殺
+    const steps = stepsFor(dynamics);
+    engine.stepCGL(steps);
+    if (coRotate) phaseRef += params.c * params.dt * steps; // +c·Δt で一様回転を相殺
     // 写真の移流は cgl の A/blend でのみ（他力学は流れ場を持たない）
     if (dynamics === "cgl" && mode !== "B") engine.advectMap();
   };

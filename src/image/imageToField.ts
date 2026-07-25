@@ -135,15 +135,23 @@ export function imageToField(img: ImageLike, L: number, seed: Seed = "color"): F
 
 // --- 力学別の種（orig=線形光 RGBA L*L*4 から状態 re/im を作る） ----------------
 
-// Gray-Scott: u=1−0.5·輝度, v=0.25·輝度（写真の明部に種を撒く）。
+// 決定的ハッシュノイズ [0,1)（リセットで同じ＝再現的）。
+function hashNoise(i: number): number {
+  const s = Math.sin(i * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// Gray-Scott: u=1−0.5·輝度, v=0.25·輝度＋ノイズ。ノイズで一様領域(空など)が v=0 へ
+// 減衰して真っ黒になるのを防ぐ（Turing を全域で立てる・checks/gs-seed で確認）。
 export function seedGrayScott(orig: Float32Array, L: number): { re: Float32Array; im: Float32Array } {
   const n = L * L;
   const re = new Float32Array(n);
   const im = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const m = luminance709(orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2]);
-    re[i] = 1 - 0.5 * m;
-    im[i] = 0.25 * m;
+    const v = Math.min(0.6, 0.22 * m + 0.14 * hashNoise(i));
+    re[i] = 1 - 0.5 * v;
+    im[i] = v;
   }
   return { re, im };
 }

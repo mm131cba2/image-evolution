@@ -245,18 +245,6 @@ fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
   return vec4<f32>(p[vi], 0.0, 1.0);
 }
 
-// Gray-Scott 用 逐次カラーマップ（暗→ティール→白）。
-fn cmapGS(t0: f32) -> vec3<f32> {
-  let t = clamp(t0, 0.0, 1.0);
-  let lo = mix(vec3<f32>(0.02, 0.05, 0.10), vec3<f32>(0.10, 0.72, 0.62), smoothstep(0.0, 0.5, t));
-  return mix(lo, vec3<f32>(0.96, 0.98, 0.92), smoothstep(0.5, 1.0, t));
-}
-// Lenia 用 カラーマップ（暗→緑→黄・生命的）。
-fn cmapLenia(t0: f32) -> vec3<f32> {
-  let t = clamp(t0, 0.0, 1.0);
-  let lo = mix(vec3<f32>(0.0, 0.0, 0.05), vec3<f32>(0.10, 0.42, 0.16), smoothstep(0.0, 0.4, t));
-  return mix(lo, vec3<f32>(0.92, 0.96, 0.42), smoothstep(0.4, 1.0, t));
-}
 // BT.601 YCbCr→sRGB（dynamics.ts yCbCrToRgb と一致）。
 fn ycbcr2rgb(Y: f32, Cb: f32, Cr: f32) -> vec3<f32> {
   return vec3<f32>(Y + 1.402 * Cr, Y - 0.344136 * Cb - 0.714136 * Cr, Y + 1.772 * Cb);
@@ -292,11 +280,13 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
 
   var outc: vec3<f32>;
   if (P.dynamics == 1u) {
-    // Gray-Scott: v(=state.y) を逐次カラーマップ（v≈0..0.4 を [0,1] へ）
-    outc = cmapGS(psi.y / 0.4);
+    // Gray-Scott: 写真の色を v(=state.y) の強度で明暗変調（写真ごとに色が変わる・真っ黒回避）
+    let fi = clamp(psi.y / 0.3, 0.0, 1.0);
+    outc = clamp(mix(origHere * 0.12, origHere * 1.5, fi), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.dynamics == 2u) {
-    // Lenia: u(=state.x) を生命的カラーマップ
-    outc = cmapLenia(psi.x);
+    // Lenia: 写真の色を u(=state.x) で明暗変調（黄色一色でなく写真依存の色に）
+    let fi = clamp(psi.x, 0.0, 1.0);
+    outc = clamp(mix(origHere * 0.12, origHere * 1.5, fi), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.dynamics == 3u) {
     // 色差拡散: 輝度は原本・色差は発展した Cb,Cr（写真の形は保ち色だけ滲む）
     let Y = 0.299 * origHere.r + 0.587 * origHere.g + 0.114 * origHere.b;

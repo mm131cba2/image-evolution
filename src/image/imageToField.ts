@@ -167,6 +167,17 @@ export function seedLenia(orig: Float32Array, L: number): { re: Float32Array; im
   return { re, im };
 }
 
+// スカラー力学（telegraph/SH/FHN/CH）の種: re=scale·(輝度−0.5)（中心化）, im=0。
+export function seedScalar(orig: Float32Array, L: number, scale: number): { re: Float32Array; im: Float32Array } {
+  const n = L * L;
+  const re = new Float32Array(n);
+  const im = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    re[i] = scale * (luminance709(orig[i * 4], orig[i * 4 + 1], orig[i * 4 + 2]) - 0.5);
+  }
+  return { re, im };
+}
+
 // 四元数（全色発展）: q=(w,x,y,z) を interleave した Float32Array（n*4）。
 // 純虚部 Im=(x,y,z) に写真の OKLab (L,a,b) を載せる（表示の逆変換）: x=2(L−0.5), y=a/0.14, z=b/0.14。
 // w=0 始動（w は色に使わず内部自由度として発展）。

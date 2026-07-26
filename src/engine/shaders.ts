@@ -3,13 +3,14 @@
 //
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
 //   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
-//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate  （64 バイト）
+//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate 64:gamma 68..:pad （80 バイト）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
   dt: f32, ampRef: f32, speed: f32, mode: u32,
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
+  gamma: f32, _p4: f32, _p5: f32, _p6: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -210,6 +211,103 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     stride = stride / 2u;
   }
   if (tid == 0u) { meanOut[0] = vec4<f32>(partial[0] / f32(n), 0.0); }
+}
+`;
+
+// 電信方程式（拡散↔波動の統一）。状態 vec2=(u,v)。u_t=v, v_t=c²∇²u−γv。
+// γ→0 で波動（伝播）・γ 大で拡散（その場で広がる）。CPU 参照 waveStep（γ 固定）と同型。
+// c²=D, γ=P.gamma。分数階版は陽的 GL が不安定なので整数階のこれで統一（checks 済み）。
+export const TELEGRAPH_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn uAt(x: i32, y: i32, L: i32) -> f32 { return inBuf[u32(clamp(y,0,L-1)*L+clamp(x,0,L-1))].x; }
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let s = inBuf[c]; // (u, v)
+  let lap = uAt(x-1,y,L)+uAt(x+1,y,L)+uAt(x,y-1,L)+uAt(x,y+1,L) - 4.0*s.x;
+  let v = s.y + P.dt * (P.D * lap - P.gamma * s.y);
+  outBuf[c] = vec2<f32>(s.x + P.dt * v, v);
+}
+`;
+
+// 壁(clamp)境界の 13 点 biharmonic ∇⁴u（SH/CH 用）。CPU biharmReflect と一致。
+const BIHARM_WGSL = `
+fn uAt(x: i32, y: i32, L: i32) -> f32 { return inBuf[u32(clamp(y,0,L-1)*L+clamp(x,0,L-1))].x; }
+fn bih(x: i32, y: i32, L: i32) -> f32 {
+  return 20.0*uAt(x,y,L)
+    - 8.0*(uAt(x,y-1,L)+uAt(x,y+1,L)+uAt(x-1,y,L)+uAt(x+1,y,L))
+    + 2.0*(uAt(x+1,y-1,L)+uAt(x-1,y-1,L)+uAt(x+1,y+1,L)+uAt(x-1,y+1,L))
+    + (uAt(x,y-2,L)+uAt(x,y+2,L)+uAt(x-2,y,L)+uAt(x+2,y,L));
+}
+fn lap5(x: i32, y: i32, L: i32) -> f32 {
+  return uAt(x-1,y,L)+uAt(x+1,y,L)+uAt(x,y-1,L)+uAt(x,y+1,L) - 4.0*uAt(x,y,L);
+}
+`;
+
+// Swift-Hohenberg（縞・迷路・六方）。状態 re=u。u_t=r·u−u−2∇²u−∇⁴u−u³。checks 済み。
+export const SWIFT_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+${BIHARM_WGSL}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let u = inBuf[c].x;
+  let r = 0.5; let dt = 0.02;
+  let un = u + dt * (r*u - u - 2.0*lap5(x,y,L) - bih(x,y,L) - u*u*u);
+  outBuf[c] = vec2<f32>(un, 0.0);
+}
+`;
+
+// FitzHugh-Nagumo（興奮性・伝播波）。状態 re=u, im=v。checks 済み。
+export const FHN_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn uAt(x: i32, y: i32, L: i32) -> f32 { return inBuf[u32(clamp(y,0,L-1)*L+clamp(x,0,L-1))].x; }
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let s = inBuf[c]; let u = s.x; let v = s.y;
+  let lap = uAt(x-1,y,L)+uAt(x+1,y,L)+uAt(x,y-1,L)+uAt(x,y+1,L) - 4.0*u;
+  let D = 1.0; let eps = 0.08; let a = 0.2; let bb = 0.5; let dt = 0.12;
+  let un = u + dt * (u - u*u*u/3.0 - v + D*lap);
+  let vn = v + dt * eps * (u + a - bb*v);
+  outBuf[c] = vec2<f32>(un, vn);
+}
+`;
+
+// Cahn-Hilliard（相分離）。状態 re=u。u_t=∇²(u³)−∇²u−κ∇⁴u。checks 済み（壁境界で有界）。
+export const CAHN_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+${BIHARM_WGSL}
+fn u3At(x: i32, y: i32, L: i32) -> f32 { let u = uAt(x,y,L); return u*u*u; }
+fn lapU3(x: i32, y: i32, L: i32) -> f32 {
+  return u3At(x-1,y,L)+u3At(x+1,y,L)+u3At(x,y-1,L)+u3At(x,y+1,L) - 4.0*u3At(x,y,L);
+}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let k = 0.5; let dt = 0.008;
+  let un = inBuf[c].x + dt * (lapU3(x,y,L) - lap5(x,y,L) - k*bih(x,y,L));
+  outBuf[c] = vec2<f32>(un, 0.0);
 }
 `;
 
@@ -423,6 +521,13 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     let S = 0.14 * taper;
     let lin = oklab2lin(Ld, S * im.y, S * im.z);
     outc = vec3<f32>(lin2srgb1(lin.r), lin2srgb1(lin.g), lin2srgb1(lin.b));
+  } else if (P.dynamics >= 5u) {
+    // 電信/SH/FHN/CH: スカラー場 u=psi.x を写真の色で明暗変調（力学別に正規化）。
+    var fi = 0.5 + 0.5 * psi.x;
+    if (P.dynamics == 5u) { fi = 0.5 + 0.8 * psi.x; }      // telegraph（u は小さめ）
+    else if (P.dynamics == 7u) { fi = 0.5 + 0.3 * psi.x; } // FHN（u は ±2）
+    fi = clamp(fi, 0.0, 1.0);
+    outc = clamp(mix(origHere * 0.12, origHere * 1.5, fi), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.mode == 1u) { outc = bcol; }
   else if (P.mode == 0u) { outc = acol; }
   else { outc = mix(acol, bcol, P.blend); }

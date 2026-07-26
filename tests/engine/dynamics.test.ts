@@ -4,6 +4,10 @@ import {
   leniaStep,
   chromaStep,
   quatCglStep,
+  waveStep,
+  swiftHohenbergStep,
+  fitzHughNagumoStep,
+  cahnHilliardStep,
   rgbToYCbCr,
   yCbCrToRgb,
 } from "../../src/engine/dynamics";
@@ -110,6 +114,63 @@ describe("quatCglStep（四元数CGL・全色発展）", () => {
     expect(std(seen[0])).toBeGreaterThan(0.05); // x(明度) が動く
     expect(std(seen[1])).toBeGreaterThan(0.05); // y(a) が動く
     expect(std(seen[2])).toBeGreaterThan(0.05); // z(b) が動く
+  });
+});
+
+// 写真代わりの滑らかな初期場。
+function photoField(L: number): { re: Float32Array; im: Float32Array } {
+  const re = new Float32Array(L * L);
+  const im = new Float32Array(L * L);
+  for (let y = 0; y < L; y++)
+    for (let x = 0; x < L; x++) re[y * L + x] = 0.5 + 0.3 * Math.sin((6 * x) / L) - 0.5;
+  return { re, im };
+}
+const bounded = (a: Float32Array, lim: number): boolean => a.every((v) => Number.isFinite(v) && Math.abs(v) < lim);
+const std = (a: Float32Array): number => {
+  const m = a.reduce((s, v) => s + v, 0) / a.length;
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
+};
+
+describe("waveStep（波動）", () => {
+  it("有界に伝播（発散しない）", () => {
+    const L = 24;
+    const { re, im } = photoField(L);
+    for (let s = 0; s < 500; s++) waveStep(re, im, L);
+    expect(bounded(re, 3)).toBe(true);
+    expect(std(re)).toBeGreaterThan(0); // 波が立っている
+  });
+});
+
+describe("swiftHohenbergStep（縞）", () => {
+  it("有界・パターンに自己組織化（分散が育つ）", () => {
+    const L = 32;
+    const { re, im } = photoField(L);
+    for (let i = 0; i < re.length; i++) re[i] *= 0.2;
+    for (let s = 0; s < 2000; s++) swiftHohenbergStep(re, im, L);
+    expect(bounded(re, 2)).toBe(true);
+    expect(std(re)).toBeGreaterThan(0.2); // ±1 縞へ
+    expect(im.every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe("fitzHughNagumoStep（興奮性）", () => {
+  it("有界（発散しない）", () => {
+    const L = 24;
+    const { re, im } = photoField(L);
+    for (let i = 0; i < re.length; i++) re[i] *= 2;
+    for (let s = 0; s < 800; s++) fitzHughNagumoStep(re, im, L);
+    expect(bounded(re, 3)).toBe(true);
+  });
+});
+
+describe("cahnHilliardStep（相分離）", () => {
+  it("有界・±へ相分離（壁境界のため質量は近似保存）", () => {
+    const L = 32;
+    const { re, im } = photoField(L);
+    for (let i = 0; i < re.length; i++) re[i] *= 0.4;
+    for (let s = 0; s < 3000; s++) cahnHilliardStep(re, im, L);
+    expect(bounded(re, 2)).toBe(true); // 発散しない
+    expect(std(re)).toBeGreaterThan(0.3); // ±ドメインへ分離
   });
 });
 

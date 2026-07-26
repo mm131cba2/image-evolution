@@ -42,6 +42,7 @@ export interface ControlCallbacks {
   onCoRotate: (on: boolean) => void;
   onAnchor: (v: number) => void;
   onYRate: (v: number) => void;
+  onGamma: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -120,6 +121,10 @@ export function buildControls(
     ["lenia", "力学: Lenia（連続ライフ）"],
     ["chroma", "力学: 色拡散（YCbCr）"],
     ["quat", "力学: 四元数（全色発展）"],
+    ["telegraph", "力学: 電信方程式（拡散↔波動）"],
+    ["swifthohenberg", "力学: Swift-Hohenberg（縞）"],
+    ["fitzhugh", "力学: FitzHugh-Nagumo（興奮性）"],
+    ["cahnhilliard", "力学: Cahn-Hilliard（相分離）"],
   ] as const) {
     const o = document.createElement("option");
     o.value = v;
@@ -140,7 +145,10 @@ export function buildControls(
   hint.style.cssText = "color:#9a9;font-size:12px;margin:2px 0;";
   hint.textContent = "このモードは調整項目がありません（固定パラメータ）";
   panel.appendChild(hint);
-  track(hint, (d) => d === "grayscott" || d === "lenia");
+  const fixedParamDyn = (d: Dynamics): boolean =>
+    d === "grayscott" || d === "lenia" || d === "swifthohenberg" ||
+    d === "fitzhugh" || d === "cahnhilliard";
+  track(hint, fixedParamDyn);
 
   // モード選択（cgl のみ・A=写真を流す / B=場を表示 / blend=混合）。
   const modeRow = document.createElement("div");
@@ -323,6 +331,29 @@ export function buildControls(
     r.appendChild(value);
     panel.appendChild(r);
     track(r, (d) => d === "chroma");
+  }
+
+  // 電信方程式の減衰 γ（対数・小=波動 / 大=拡散）。拡散↔波動の統一ツマミ。
+  {
+    const [lo, hi] = [0.002, 3];
+    const { row: r, value } = row("減衰");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.001";
+    input.value = String(logScaleInv(0.05, lo, hi));
+    input.style.flex = "1";
+    value.textContent = "0.05";
+    input.addEventListener("input", () => {
+      const g = logScale(parseFloat(input.value), lo, hi);
+      value.textContent = g.toFixed(3);
+      cb.onGamma(g);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "telegraph");
   }
 
   // ボタン列: 画像・リセット・一時停止・録画（常時）。

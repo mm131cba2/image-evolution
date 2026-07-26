@@ -9,6 +9,10 @@ import {
   CHROMA_WGSL,
   QUAT_STEP_WGSL,
   QUAT_MEAN_WGSL,
+  TELEGRAPH_WGSL,
+  SWIFT_WGSL,
+  FHN_WGSL,
+  CAHN_WGSL,
   ADVECT_WGSL,
   ADVECT_MC2_WGSL,
   DISPLAY_WGSL,
@@ -16,9 +20,10 @@ import {
 import { linearToSrgb } from "../color";
 import type { CGLParams } from "./params";
 
-const PARAMS_BYTES = 64;
+const PARAMS_BYTES = 80;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
-export type DynNum = 0 | 1 | 2 | 3 | 4; // 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat
+// 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat 5=telegraph 6=swift 7=fhn 8=cahn
+export type DynNum = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 export class CGLEngine {
   private cur = 0; // psi parity（最新）
@@ -31,7 +36,7 @@ export class CGLEngine {
   private origTex: GPUTexture;
   private sampler: GPUSampler;
   private origSampler: GPUSampler;
-  private stepPipelines: GPUComputePipeline[]; // vec2 力学 [cgl, grayscott, lenia]
+  private stepPipelines: Record<number, GPUComputePipeline>; // vec2 力学（dynamics 番号→pipeline）
   private qbuf: [GPUBuffer, GPUBuffer]; // vec4 場（chroma=YCbCr / quat）のピンポン
   private chromaPipeline: GPUComputePipeline; // vec4 色拡散
   private quatPipeline: GPUComputePipeline;
@@ -48,6 +53,7 @@ export class CGLEngine {
   private anchor = 0; // 重心アンカー強度（quat・0=自由）
   private m0: [number, number, number] = [0, 0, 0]; // 写真の Im 重心
   private yrate = 0; // chroma の輝度拡散率（0=Y固定=形保持・>0=Yも溶ける）
+  private gamma = 0.05; // telegraph の減衰（0→波動・大→拡散）
 
   constructor(
     private device: GPUDevice,
@@ -109,7 +115,16 @@ export class CGLEngine {
         layout: stepPL,
         compute: { module: device.createShaderModule({ code }), entryPoint: "main" },
       });
-    this.stepPipelines = [mkStep(CGL_STEP_WGSL), mkStep(GRAYSCOTT_WGSL), mkStep(LENIA_WGSL)];
+    // vec2 力学（dynamics 番号→pipeline・computeBG を共有）。3/4 は vec4 で別扱い。
+    this.stepPipelines = {
+      0: mkStep(CGL_STEP_WGSL),
+      1: mkStep(GRAYSCOTT_WGSL),
+      2: mkStep(LENIA_WGSL),
+      5: mkStep(TELEGRAPH_WGSL),
+      6: mkStep(SWIFT_WGSL),
+      7: mkStep(FHN_WGSL),
+      8: mkStep(CAHN_WGSL),
+    };
     // vec4 場（chroma=YCbCr / quat）も同じ step レイアウト（storage in/out + uniform）を共有。
     this.chromaPipeline = mkStep(CHROMA_WGSL);
     this.quatPipeline = mkStep(QUAT_STEP_WGSL);
@@ -191,6 +206,11 @@ export class CGLEngine {
     this.yrate = r;
   }
 
+  // telegraph の減衰 γ（0→波動・大→拡散）。拡散↔波動の統一ツマミ。
+  setGamma(g: number): void {
+    this.gamma = g;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -209,6 +229,7 @@ export class CGLEngine {
     dv.setFloat32(52, this.m0[1], true);
     dv.setFloat32(56, this.m0[2], true);
     dv.setFloat32(60, this.yrate, true);
+    dv.setFloat32(64, this.gamma, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -268,9 +289,9 @@ export class CGLEngine {
   }
 
   // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
-  // dynamics>=3(chroma/quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
+  // dynamics 3(chroma)/4(quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
   stepCGL(times: number): void {
-    const isVec4 = this.dynamics >= 3;
+    const isVec4 = this.dynamics === 3 || this.dynamics === 4;
     const pipe = this.dynamics === 4 ? this.quatPipeline
       : this.dynamics === 3 ? this.chromaPipeline
       : this.stepPipelines[this.dynamics];

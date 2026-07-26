@@ -12,6 +12,7 @@ import {
   seedLenia,
   seedChroma,
   seedQuat,
+  seedScalar,
   type Seed,
   type Field,
 } from "./image/imageToField";
@@ -26,7 +27,11 @@ function modeNum(m: Mode): ModeNum {
 }
 
 function dynNum(d: Dynamics): DynNum {
-  return d === "cgl" ? 0 : d === "grayscott" ? 1 : d === "lenia" ? 2 : d === "chroma" ? 3 : 4;
+  const map: Record<Dynamics, DynNum> = {
+    cgl: 0, grayscott: 1, lenia: 2, chroma: 3, quat: 4,
+    telegraph: 5, swifthohenberg: 6, fitzhugh: 7, cahnhilliard: 8,
+  };
+  return map[d];
 }
 
 // 画像未選択でもモード A が何か映すための既定原本（滑らかな色のグラデ・線形光 RGBA）。
@@ -126,6 +131,7 @@ async function main(): Promise<void> {
   let anchorStrength = 0.6; // quat「元の色味を保つ」既定（0=自由発展・1=完全に元の重心）
   let quatM0: [number, number, number] = [0, 0, 0]; // 写真の色重心（seed 時に算出）
   let chromaYRate = 0.4; // chroma 輝度拡散率（0=Y固定=形保持・>0=形も溶ける）
+  let gamma = 0.05; // telegraph 減衰（拡散↔波動の統一ツマミ・小=波動）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -164,7 +170,15 @@ async function main(): Promise<void> {
       engine.setChromaYRate(chromaYRate);
       engine.seedQuat(seedChroma(f.orig, L)); // vec4=(Y,Cb,Cr,0)
     } else {
-      const s = dynamics === "grayscott" ? seedGrayScott(f.orig, L) : seedLenia(f.orig, L);
+      // vec2 スカラー/2成分力学。種は写真の輝度から（力学ごとに振幅）。
+      const s =
+        dynamics === "grayscott" ? seedGrayScott(f.orig, L)
+        : dynamics === "lenia" ? seedLenia(f.orig, L)
+        : dynamics === "telegraph" ? seedScalar(f.orig, L, 1.0)
+        : dynamics === "swifthohenberg" ? seedScalar(f.orig, L, 0.2)
+        : dynamics === "fitzhugh" ? seedScalar(f.orig, L, 2.0)
+        : seedScalar(f.orig, L, 0.4); // cahnhilliard
+      if (dynamics === "telegraph") engine.setGamma(gamma);
       engine.seed(s.re, s.im);
     }
     engine.resetMap();
@@ -225,6 +239,10 @@ async function main(): Promise<void> {
       chromaYRate = v;
       engine.setChromaYRate(v); // chroma の輝度拡散率
     },
+    onGamma: (v) => {
+      gamma = v;
+      engine.setGamma(v); // telegraph の拡散↔波動
+    },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {
       running = !running;
@@ -240,7 +258,8 @@ async function main(): Promise<void> {
   // 力学ごとの 1 論理フレーム当たりステップ数（cgl=標準／lenia=重いので少なめ／
   // chroma=拡散が遅く見えるので多め／grayscott=見やすくやや少なめ）。
   const stepsFor = (d: Dynamics): number =>
-    d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3 : 6; // quat/cgl=6
+    d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3
+    : d === "fitzhugh" ? 3 : d === "cahnhilliard" ? 8 : 6; // telegraph/swift/quat/cgl=6
   let acc = 0;
   let last = performance.now();
   const advance = (): void => {

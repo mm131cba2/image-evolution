@@ -55,6 +55,7 @@ export class CGLEngine {
   private yrate = 0; // chroma の輝度拡散率（0=Y固定=形保持・>0=Yも溶ける）
   private gamma = 0.05; // telegraph の減衰（0→波動・大→拡散）
   private coupling = 1; // quat の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
+  private morph = 1; // lenia の diffusion↔Lenia 核 morph（1=Lenia パターン・0=拡散=均す）
 
   constructor(
     private device: GPUDevice,
@@ -217,6 +218,11 @@ export class CGLEngine {
     this.coupling = l;
   }
 
+  // lenia の diffusion↔Lenia 核 morph（1=リング核+ベル=パターン・0=局所核+恒等=拡散で均す）。
+  setMorph(m: number): void {
+    this.morph = m;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -237,6 +243,7 @@ export class CGLEngine {
     dv.setFloat32(60, this.yrate, true);
     dv.setFloat32(64, this.gamma, true);
     dv.setFloat32(68, this.coupling, true);
+    dv.setFloat32(72, this.morph, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 

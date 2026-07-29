@@ -44,6 +44,7 @@ export interface ControlCallbacks {
   onYRate: (v: number) => void;
   onGamma: (v: number) => void;
   onCoupling: (v: number) => void;
+  onMorph: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -377,6 +378,28 @@ export function buildControls(
     r.appendChild(value);
     panel.appendChild(r);
     track(r, (d) => d === "telegraph");
+  }
+
+  // Lenia の diffusion↔Lenia 核 morph λ（0=拡散=均す／1=Lenia=生命的パターン・λ_c≈0.6 で分岐）。
+  {
+    const { row: r, value } = row("核");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "1";
+    input.style.flex = "1";
+    value.textContent = "1.00";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onMorph(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "lenia");
   }
 
   // ボタン列: 画像・リセット・一時停止・録画（常時）。

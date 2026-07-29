@@ -10,7 +10,7 @@ struct Params {
   dt: f32, ampRef: f32, speed: f32, mode: u32,
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
-  gamma: f32, coupling: f32, _p5: f32, _p6: f32,
+  gamma: f32, coupling: f32, morph: f32, _p6: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -90,19 +90,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let L = i32(P.L);
   let x = i32(gid.x); let y = i32(gid.y);
   if (x >= L || y >= L) { return; }
-  let R = 8; let mu = 0.15; let sigma = 0.017; let kr0 = 0.5; let kw = 0.15; let dt = 0.3;
+  let R = 8; let mu = 0.15; let sigma = 0.017; let kw = 0.15; let dt = 0.3;
+  // morph λ: 核 kr0 と成長を diffusion↔Lenia で連続変形（checks/kernel-morph.py）。
+  let kr = 0.5 * P.morph;   // 中心核(0=局所=拡散) ↔ リング(0.5=Lenia)
   var accWU = 0.0; var accW = 0.0;
   for (var dy = -R; dy <= R; dy = dy + 1) {
     for (var dx = -R; dx <= R; dx = dx + 1) {
       let r = sqrt(f32(dx*dx + dy*dy)) / f32(R);
       if (r > 1.0 || r == 0.0) { continue; }
-      let w = bell(r, kr0, kw);
+      let w = bell(r, kr, kw);
       accWU = accWU + w * uAt(x + dx, y + dy, L);
       accW = accW + w;
     }
   }
   let pot = select(0.0, accWU / accW, accW > 0.0);
-  let g = bell(pot, mu, sigma);
+  let g = mix(pot, bell(pot, mu, sigma), P.morph);  // 恒等(拡散) ↔ ベル(Lenia)
   let decay = exp(-dt);
   let u = inBuf[u32(y * L + x)].x;
   outBuf[u32(y * L + x)] = vec2<f32>(decay * u + (1.0 - decay) * g, 0.0);

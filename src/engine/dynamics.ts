@@ -51,11 +51,16 @@ function bell(x: number, m: number, s: number): number {
   return Math.exp(-0.5 * d * d);
 }
 
-export function leniaStep(re: Float32Array, im: Float32Array, L: number): void {
+// morph λ∈[0,1]＝diffusion↔Lenia 核 morph（統合形の橋・checks/kernel-morph.py）:
+//   λ=1（既定）… リング核(kr0=0.5)＋ベル成長＝Lenia の生命的パターン。
+//   λ=0        … 中心核(kr0=0＝近距離平均)＋恒等成長＝局所平均への緩和＝拡散(均す・§3 K∗u−u→∇²)。
+//   中間        … λ_c≈0.6 でパターンが分岐（Turing 型・§5）。核と成長を同時に morph。
+export function leniaStep(re: Float32Array, im: Float32Array, L: number, morph = 1): void {
   const n = L * L;
   const out = new Float32Array(n);
   const { mu, sigma, R, kr0, kw, dt } = LENIA;
   const decay = Math.exp(-dt);
+  const kr = kr0 * morph; // リング半径を λ で 0（中心＝局所）↔0.5（リング）に morph
   for (let y = 0; y < L; y++) {
     for (let x = 0; x < L; x++) {
       let accWU = 0;
@@ -65,14 +70,15 @@ export function leniaStep(re: Float32Array, im: Float32Array, L: number): void {
         for (let dx = -R; dx <= R; dx++) {
           const r = Math.hypot(dx, dy) / R;
           if (r > 1 || r === 0) continue;
-          const w = bell(r, kr0, kw);
+          const w = bell(r, kr, kw);
           const xx = Math.min(L - 1, Math.max(0, x + dx));
           accWU += w * re[yy * L + xx];
           accW += w;
         }
       }
       const pot = accW > 0 ? accWU / accW : 0; // 正規化ポテンシャル ∈ [0,1]
-      const g = bell(pot, mu, sigma); // 成長目標 ∈ [0,1]
+      // 成長目標を 恒等(pot＝拡散) ↔ ベル(Lenia) で morph。
+      const g = (1 - morph) * pot + morph * bell(pot, mu, sigma);
       const u = re[y * L + x];
       out[y * L + x] = decay * u + (1 - decay) * g;
     }

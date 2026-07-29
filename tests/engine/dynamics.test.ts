@@ -63,6 +63,38 @@ describe("leniaStep", () => {
     expect(mean(u)).not.toBeCloseTo(before, 5); // 変化した
     expect(maxAbs(im)).toBe(0); // im は未使用
   });
+
+  it("morph λ: λ=0 は拡散（細部を均す）・λ=1 は Lenia（構造を保つ）", () => {
+    const L = 48, n = L * L;
+    // 低周波＋細かいノイズの初期場（拡散なら細部が落ちる）。
+    const seed = new Float32Array(n);
+    let s = 1;
+    const rnd = (): number => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let y = 0; y < L; y++)
+      for (let x = 0; x < L; x++)
+        seed[y * L + x] = 0.4 + 0.15 * Math.sin((6 * x) / L) + 0.2 * (rnd() - 0.5);
+    // 高周波 RMS（隣接差＝細部の量）。
+    const detail = (u: Float32Array): number => {
+      let acc = 0;
+      for (let y = 0; y < L; y++)
+        for (let x = 0; x < L - 1; x++) acc += (u[y * L + x + 1] - u[y * L + x]) ** 2;
+      return Math.sqrt(acc / n);
+    };
+    const d0 = detail(seed);
+    const uDiff = seed.slice(), uLenia = seed.slice(), im = new Float32Array(n);
+    for (let k = 0; k < 40; k++) leniaStep(uDiff, im, L, 0); // 拡散端
+    for (let k = 0; k < 40; k++) leniaStep(uLenia, im, L, 1); // Lenia 端
+    expect(detail(uDiff)).toBeLessThan(d0 * 0.5); // λ=0 は細部が落ちる（均す）
+    expect(detail(uLenia)).toBeGreaterThan(detail(uDiff)); // λ=1 は構造が残る/立つ
+  });
+
+  it("既定（morph 省略）は λ=1 と一致（従来挙動を保つ）", () => {
+    const L = 24, n = L * L;
+    const a = new Float32Array(n), b = new Float32Array(n), im = new Float32Array(n);
+    for (let i = 0; i < n; i++) { a[i] = (i % 7) / 7; b[i] = a[i]; }
+    for (let k = 0; k < 8; k++) { leniaStep(a, im, L); leniaStep(b, im, L, 1); }
+    for (let i = 0; i < n; i++) expect(a[i]).toBeCloseTo(b[i], 6);
+  });
 });
 
 describe("chromaStep", () => {

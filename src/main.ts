@@ -133,6 +133,7 @@ async function main(): Promise<void> {
   let chromaYRate = 0.4; // chroma 輝度拡散率（0=Y固定=形保持・>0=形も溶ける）
   let gamma = 0.05; // telegraph 減衰（拡散↔波動の統一ツマミ・小=波動）
   let coupling = 1; // quat 代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
+  let morph = 1; // lenia の diffusion↔Lenia 核 morph（1=パターン・0=拡散=均す）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -181,6 +182,7 @@ async function main(): Promise<void> {
         : dynamics === "fitzhugh" ? seedScalar(f.orig, L, 2.0)
         : seedScalar(f.orig, L, 0.4); // cahnhilliard
       if (dynamics === "telegraph") engine.setGamma(gamma);
+      if (dynamics === "lenia") engine.setMorph(morph);
       engine.seed(s.re, s.im);
     }
     engine.resetMap();
@@ -248,6 +250,10 @@ async function main(): Promise<void> {
     onCoupling: (v) => {
       coupling = v;
       engine.setCoupling(v); // quat の scalar↔quat 代数結合
+    },
+    onMorph: (v) => {
+      morph = v;
+      engine.setMorph(v); // lenia の diffusion↔Lenia 核 morph
     },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {

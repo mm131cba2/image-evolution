@@ -10,7 +10,7 @@ struct Params {
   dt: f32, ampRef: f32, speed: f32, mode: u32,
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
-  gamma: f32, _p4: f32, _p5: f32, _p6: f32,
+  gamma: f32, coupling: f32, _p5: f32, _p6: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -161,13 +161,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c = u32(y * L + x);
   let q = inBuf[c];  // (w,x,y,z)
   let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * q;
+  // coupling λ: 1=完全結合(四元数CGL・色相回転内蔵) .. 0=成分独立(直和ℝ⁴・褪色)。
+  // 回転係数を λ で絞り、ノルムを 共有|q|² ↔ 成分ごとq_k² で補間（checks/color-algebra.py）。
+  let lam = P.coupling;
   let m2 = dot(q, q);
+  let n2 = mix(q * q, vec4<f32>(m2), lam);   // 成分ごと n²_k = (1-λ)q_k² + λ|q|²
   let s = 0.57735027; // 1/√3
-  let Ab = vec4<f32>(1.0, P.b*s, P.b*s, P.b*s);
-  let Ac = vec4<f32>(1.0, P.c*s, P.c*s, P.c*s);
+  let Ab = vec4<f32>(1.0, lam*P.b*s, lam*P.b*s, lam*P.b*s);
+  let Ac = vec4<f32>(1.0, lam*P.c*s, lam*P.c*s, lam*P.c*s);
   // qmul は a=(aw,ax,ay,az) 規約。ここでは vec4 の .x=w,.y=x,.z=y,.w=z として扱う。
   let diff = qmul(Ab, P.D * lap);
-  let nl = qmul(Ac, m2 * q);
+  let nl = qmul(Ac, n2 * q);
   outBuf[c] = q + P.dt * (q + diff - nl);
 }
 `;

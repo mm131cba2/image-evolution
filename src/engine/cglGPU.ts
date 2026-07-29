@@ -54,6 +54,7 @@ export class CGLEngine {
   private m0: [number, number, number] = [0, 0, 0]; // 写真の Im 重心
   private yrate = 0; // chroma の輝度拡散率（0=Y固定=形保持・>0=Yも溶ける）
   private gamma = 0.05; // telegraph の減衰（0→波動・大→拡散）
+  private coupling = 1; // quat の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
 
   constructor(
     private device: GPUDevice,
@@ -211,6 +212,11 @@ export class CGLEngine {
     this.gamma = g;
   }
 
+  // quat の代数結合 λ（1=四元数=色相回転内蔵・0=成分独立=直和ℝ⁴で褪色）。scalar↔quat ノブ。
+  setCoupling(l: number): void {
+    this.coupling = l;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -230,6 +236,7 @@ export class CGLEngine {
     dv.setFloat32(56, this.m0[2], true);
     dv.setFloat32(60, this.yrate, true);
     dv.setFloat32(64, this.gamma, true);
+    dv.setFloat32(68, this.coupling, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 

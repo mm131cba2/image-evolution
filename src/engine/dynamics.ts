@@ -121,9 +121,22 @@ function qmul(
 }
 
 // 4 成分を interleave した Float32Array（q[i*4+0..3]=w,x,y,z）を 1 ステップ進める。
-export function quatCglStep(q: Float32Array, L: number, p: { b: number; c: number; D: number; dt: number }): void {
+//
+// coupling λ∈[0,1] が「代数結合の強さ」＝scalar↔quat の連続ノブ（checks/color-algebra.py）:
+//   λ=1（既定）… 完全な四元数 CGL。回転 (1+bI)/(1+cI) と共有ノルム |q|² が全成分を常時混ぜる
+//                 ＝色相回転が内蔵・彩度を保つ。
+//   λ=0        … 回転を切り(b,c→0)ノルムを成分ごと(q_k²)に＝4 本の独立な実 Stuart–Landau 場の
+//                 直和 ℝ⊕ℝ⊕ℝ⊕ℝ＝成分が混ざらない・独立拡散で褪色。
+//   中間        … 結合が無段階に立つ（成分漏れ 0↔0.49・color-algebra.py 実測）。
+export function quatCglStep(
+  q: Float32Array,
+  L: number,
+  p: { b: number; c: number; D: number; dt: number; coupling?: number },
+): void {
   const n = L * L;
   const { b, c, D, dt } = p;
+  const lam = p.coupling ?? 1; // 既定は完全結合（従来挙動を保つ）
+  const bb = lam * b, cc = lam * c; // 回転係数を λ で絞る（λ=0 で恒等＝混ぜない）
   const [Ix, Iy, Iz] = QUAT_AXIS;
   // 各成分のラプラシアン（壁反射）。
   const comp = new Float32Array(n);
@@ -135,11 +148,16 @@ export function quatCglStep(q: Float32Array, L: number, p: { b: number; c: numbe
   for (let i = 0; i < n; i++) {
     const w = q[i * 4], x = q[i * 4 + 1], y = q[i * 4 + 2], z = q[i * 4 + 3];
     const m2 = w * w + x * x + y * y + z * z;
+    // ノルムを 共有|q|² ↔ 成分ごとq_k² で補間（λ=0 で各成分が自分の二乗＝独立飽和）。
+    const nw2 = (1 - lam) * w * w + lam * m2;
+    const nx2 = (1 - lam) * x * x + lam * m2;
+    const ny2 = (1 - lam) * y * y + lam * m2;
+    const nz2 = (1 - lam) * z * z + lam * m2;
     const lw = lap[0][i], lx = lap[1][i], ly = lap[2][i], lz = lap[3][i];
-    // (1+bI)⊗(D·∇²q)
-    const [dw, dx, dy, dz] = qmul(1, b * Ix, b * Iy, b * Iz, D * lw, D * lx, D * ly, D * lz);
-    // (1+cI)⊗(|q|²q)
-    const [nw, nx, ny, nz] = qmul(1, c * Ix, c * Iy, c * Iz, m2 * w, m2 * x, m2 * y, m2 * z);
+    // (1+λbI)⊗(D·∇²q)  … λ=0 で恒等＝成分ごとの拡散（混ざらない）
+    const [dw, dx, dy, dz] = qmul(1, bb * Ix, bb * Iy, bb * Iz, D * lw, D * lx, D * ly, D * lz);
+    // (1+λcI)⊗(n²⊙q)   … λ=0 で恒等かつ n²=q_k²＝成分ごとの立方飽和
+    const [nw, nx, ny, nz] = qmul(1, cc * Ix, cc * Iy, cc * Iz, nw2 * w, nx2 * x, ny2 * y, nz2 * z);
     q[i * 4] = w + dt * (w + dw - nw);
     q[i * 4 + 1] = x + dt * (x + dx - nx);
     q[i * 4 + 2] = y + dt * (y + dy - ny);

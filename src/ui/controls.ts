@@ -43,6 +43,7 @@ export interface ControlCallbacks {
   onAnchor: (v: number) => void;
   onYRate: (v: number) => void;
   onGamma: (v: number) => void;
+  onCoupling: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -304,6 +305,28 @@ export function buildControls(
       const v = parseFloat(input.value);
       value.textContent = v.toFixed(2);
       cb.onAnchor(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "quat");
+  }
+
+  // 四元数モードの代数結合 λ（1=四元数=色相回転・彩度保持／0=成分独立=褪色）。scalar↔quat ノブ。
+  {
+    const { row: r, value } = row("結合");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "1";
+    input.style.flex = "1";
+    value.textContent = "1.00";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onCoupling(v);
     });
     r.appendChild(input);
     r.appendChild(value);

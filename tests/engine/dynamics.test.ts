@@ -117,6 +117,60 @@ describe("quatCglStep（四元数CGL・全色発展）", () => {
   });
 });
 
+describe("quatCglStep coupling λ（scalar↔quat 代数結合ノブ）", () => {
+  // 1 点の z 成分にインパルスを与え、他成分(w,x,y)への漏れ/z の変化 を測る（2 run 差分）。
+  // checks/color-algebra.py と同型: λ=0 は完全独立(漏れ0)、λ=1 は結合(色相回転で漏れる)。
+  function leak(coupling: number): number {
+    const L = 24, n = L * L;
+    const base = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      base[i * 4] = 0.1 * Math.sin(i * 0.3);
+      base[i * 4 + 1] = 0.3 + 0.1 * Math.cos(i * 0.2);
+      base[i * 4 + 2] = 0.2 + 0.1 * Math.sin(i * 0.17);
+      base[i * 4 + 3] = -0.1 + 0.1 * Math.cos(i * 0.11);
+    }
+    const qa = base.slice(), qb = base.slice();
+    const cIdx = (Math.floor(L / 2) * L + Math.floor(L / 2)) * 4;
+    qb[cIdx + 3] += 0.5; // z にインパルス
+    const p = { b: 0.6, c: 1.0, D: 4, dt: 0.01, coupling };
+    for (let s = 0; s < 40; s++) { quatCglStep(qa, L, p); quatCglStep(qb, L, p); }
+    let other = 0, zc = 0;
+    for (let i = 0; i < n; i++) {
+      other += Math.abs(qb[i * 4] - qa[i * 4]) +
+        Math.abs(qb[i * 4 + 1] - qa[i * 4 + 1]) +
+        Math.abs(qb[i * 4 + 2] - qa[i * 4 + 2]);
+      zc += Math.abs(qb[i * 4 + 3] - qa[i * 4 + 3]);
+    }
+    return other / (zc + 1e-12);
+  }
+
+  it("λ=0 は成分が完全独立（z インパルスが他成分へ漏れない＝scalar 端）", () => {
+    expect(leak(0)).toBeLessThan(1e-6);
+  });
+
+  it("λ=1 は結合（z インパルスが他成分へ漏れる＝色相回転が内蔵の quat 端）", () => {
+    expect(leak(1)).toBeGreaterThan(0.1);
+  });
+
+  it("結合は λ とともに単調に増える（無段階ノブ）", () => {
+    const l0 = leak(0), lh = leak(0.5), l1 = leak(1);
+    expect(l0).toBeLessThan(lh);
+    expect(lh).toBeLessThan(l1);
+  });
+
+  it("既定（coupling 省略）は λ=1 と一致（従来挙動を保つ）", () => {
+    const L = 8, n = L * L;
+    const q1 = new Float32Array(n * 4), q2 = new Float32Array(n * 4);
+    for (let i = 0; i < n * 4; i++) { q1[i] = Math.sin(i); q2[i] = q1[i]; }
+    const p = { b: 0.5, c: 0.9, D: 2, dt: 0.01 };
+    for (let s = 0; s < 10; s++) {
+      quatCglStep(q1, L, p); // coupling 省略
+      quatCglStep(q2, L, { ...p, coupling: 1 });
+    }
+    for (let i = 0; i < n * 4; i++) expect(q1[i]).toBeCloseTo(q2[i], 6);
+  });
+});
+
 // 写真代わりの滑らかな初期場。
 function photoField(L: number): { re: Float32Array; im: Float32Array } {
   const re = new Float32Array(L * L);

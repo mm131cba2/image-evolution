@@ -132,6 +132,7 @@ async function main(): Promise<void> {
   let quatM0: [number, number, number] = [0, 0, 0]; // 写真の色重心（seed 時に算出）
   let chromaYRate = 0.4; // chroma 輝度拡散率（0=Y固定=形保持・>0=形も溶ける）
   let gamma = 0.05; // telegraph 減衰（拡散↔波動の統一ツマミ・小=波動）
+  let coupling = 1; // quat 代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) { mx += q4[i * 4 + 1]; my += q4[i * 4 + 2]; mz += q4[i * 4 + 3]; }
       quatM0 = [mx / n, my / n, mz / n];
       engine.setQuatAnchor(anchorStrength, quatM0);
+      engine.setCoupling(coupling);
       engine.seedQuat(q4);
     } else if (dynamics === "chroma") {
       engine.setChromaYRate(chromaYRate);
@@ -242,6 +244,10 @@ async function main(): Promise<void> {
     onGamma: (v) => {
       gamma = v;
       engine.setGamma(v); // telegraph の拡散↔波動
+    },
+    onCoupling: (v) => {
+      coupling = v;
+      engine.setCoupling(v); // quat の scalar↔quat 代数結合
     },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {

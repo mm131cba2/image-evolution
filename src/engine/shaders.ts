@@ -312,7 +312,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 // モード A の移流: 逆写像（原本をどこから引くか）を ψ 由来の速度で 1 ステップ後退。
-// v = speed·∇⊥Im(ψ)（非圧縮・非往復）。v1 は単純 semi-Lagrangian（MacCormack 上位互換は後日）。
+// v = speed·∇⊥Im(ψ)（非圧縮・非往復）。これは MacCormack 第1パス＝後退 semi-Lagrangian（第2パス ADVECT_MC2_WGSL が誤差補正して鮮鋭に保つ）。
 export const ADVECT_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
 @group(0) @binding(0) var<storage, read> mapIn: array<vec2<f32>>;   // 逆写像(ピクセル座標)

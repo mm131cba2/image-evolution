@@ -111,7 +111,8 @@ export function buildControls(
   };
   const isCgl = (d: Dynamics): boolean => d === "cgl";
   const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "quat"; // b,c を使う
-  const usesDiff = (d: Dynamics): boolean => d === "cgl" || d === "chroma" || d === "quat"; // D,dt
+  const usesDiff = (d: Dynamics): boolean =>
+    d === "cgl" || d === "chroma" || d === "quat" || d === "scalar"; // D,dt
 
   // 力学エンジン選択（最上位・常時）。
   const dynRow = document.createElement("div");
@@ -123,6 +124,7 @@ export function buildControls(
     ["lenia", "力学: Lenia（連続ライフ）"],
     ["chroma", "力学: 色拡散（YCbCr）"],
     ["quat", "力学: 四元数（全色発展）"],
+    ["scalar", "力学: 実数スカラー（全色・独立）"],
     ["telegraph", "力学: 電信方程式（拡散↔波動）"],
     ["swifthohenberg", "力学: Swift-Hohenberg（縞）"],
     ["fitzhugh", "力学: FitzHugh-Nagumo（興奮性）"],
@@ -310,7 +312,7 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
-    track(r, (d) => d === "quat");
+    track(r, (d) => d === "quat" || d === "scalar"); // 元色アンカーは quat/scalar 共通
   }
 
   // 四元数モードの代数結合 λ（1=四元数=色相回転・彩度保持／0=成分独立=褪色）。scalar↔quat ノブ。

@@ -12,7 +12,7 @@ export type Mode = "A" | "B" | "blend";
 // quat=四元数(全色発展) / telegraph=電信方程式(拡散↔波動の統一) /
 // swifthohenberg=縞・六方 / fitzhugh=興奮性(伝播波) / cahnhilliard=相分離。
 export type Dynamics =
-  | "cgl" | "grayscott" | "lenia" | "chroma" | "quat"
+  | "cgl" | "grayscott" | "lenia" | "chroma" | "quat" | "scalar"
   | "telegraph" | "swifthohenberg" | "fitzhugh" | "cahnhilliard";
 
 export interface AppConfig {
@@ -36,7 +36,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 const MODES: readonly Mode[] = ["A", "B", "blend"];
 const SEEDS: readonly Seed[] = ["color", "phase", "amp"];
 const DYNAMICS: readonly Dynamics[] = [
-  "cgl", "grayscott", "lenia", "chroma", "quat",
+  "cgl", "grayscott", "lenia", "chroma", "quat", "scalar",
   "telegraph", "swifthohenberg", "fitzhugh", "cahnhilliard",
 ];
 

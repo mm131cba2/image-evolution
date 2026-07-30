@@ -19,6 +19,35 @@ const variance = (a: Float32Array): number => {
   return a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length;
 };
 
+// 実数スカラー（全色・独立）モード＝quatCglStep の coupling=0 極限。
+// 各色成分が独立な実 Stuart-Landau 場（ℝ⊕ℝ⊕ℝ⊕ℝ）＝混ざらないことを確定する
+// （color-algebra.py の scalar スキーム／quat 結合ノブ λ=0 の意味づけ）。
+describe("scalar モード（quatCglStep coupling=0＝実数スカラー全色）", () => {
+  const build = (L: number): Float32Array => {
+    const q = new Float32Array(L * L * 4); // 全成分 0 から x にだけインパルス
+    q[(Math.floor(L / 2) * L + Math.floor(L / 2)) * 4 + 1] = 0.5; // x 成分
+    return q;
+  };
+  it("λ=0 は成分が混ざらない（x のインパルスが w/y/z へ漏れない）", () => {
+    const L = 16;
+    const q = build(L);
+    for (let s = 0; s < 20; s++) quatCglStep(q, L, { b: 0.5, c: 0.5, D: 1, dt: 0.05, coupling: 0 });
+    let leak = 0;
+    for (let i = 0; i < L * L; i++)
+      leak = Math.max(leak, Math.abs(q[i * 4]), Math.abs(q[i * 4 + 2]), Math.abs(q[i * 4 + 3]));
+    expect(leak).toBeLessThan(1e-6); // w,y,z は 0 のまま＝独立＝実数スカラー直和
+  });
+  it("λ=1（四元数）は結合して他成分へ漏れる（対照）", () => {
+    const L = 16;
+    const q = build(L);
+    for (let s = 0; s < 20; s++) quatCglStep(q, L, { b: 0.5, c: 0.5, D: 1, dt: 0.05, coupling: 1 });
+    let leak = 0;
+    for (let i = 0; i < L * L; i++)
+      leak = Math.max(leak, Math.abs(q[i * 4]), Math.abs(q[i * 4 + 2]), Math.abs(q[i * 4 + 3]));
+    expect(leak).toBeGreaterThan(1e-3); // 回転で他成分へ漏れる
+  });
+});
+
 describe("grayScottStep", () => {
   it("一様な平衡状態(u=1,v=0)は動かない", () => {
     const L = 8;

@@ -28,7 +28,7 @@ function modeNum(m: Mode): ModeNum {
 
 function dynNum(d: Dynamics): DynNum {
   const map: Record<Dynamics, DynNum> = {
-    cgl: 0, grayscott: 1, lenia: 2, chroma: 3, quat: 4,
+    cgl: 0, grayscott: 1, lenia: 2, chroma: 3, quat: 4, scalar: 4,
     telegraph: 5, swifthohenberg: 6, fitzhugh: 7, cahnhilliard: 8,
   };
   return map[d];
@@ -159,7 +159,10 @@ async function main(): Promise<void> {
     engine.seedOriginal(f.orig);
     if (dynamics === "cgl") {
       engine.seed(f.psiRe, f.psiIm);
-    } else if (dynamics === "quat") {
+    } else if (dynamics === "quat" || dynamics === "scalar") {
+      // scalar＝quat の coupling=0 極限＝色の各成分が独立な実 Stuart-Landau 場（ℝ⊕ℝ⊕ℝ⊕ℝ・
+      // 混ざらない・独立拡散で褪色）。quat の vec4 場/表示/重心アンカーをそのまま共有し、
+      // 結合 λ だけ 0 に固定＝「実数スカラーで全色発展」（checks/color-algebra.py）。
       const q4 = seedQuat(f.orig, L);
       // 写真の色重心 m0（純虚部 Im の平均）。表示の再センタの基準。
       let mx = 0, my = 0, mz = 0;
@@ -167,7 +170,7 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) { mx += q4[i * 4 + 1]; my += q4[i * 4 + 2]; mz += q4[i * 4 + 3]; }
       quatM0 = [mx / n, my / n, mz / n];
       engine.setQuatAnchor(anchorStrength, quatM0);
-      engine.setCoupling(coupling);
+      engine.setCoupling(dynamics === "scalar" ? 0 : coupling); // scalar は結合ゼロ＝成分独立
       engine.seedQuat(q4);
     } else if (dynamics === "chroma") {
       engine.setChromaYRate(chromaYRate);
@@ -296,7 +299,7 @@ async function main(): Promise<void> {
       if (iters === MAX_CATCHUP) acc = 0; // 追いつけない時は積み残しを捨てる
     }
     engine.setState(params, modeNum(mode), blend, phaseRef);
-    if (dynamics === "quat") engine.computeQuatMean(); // 重心を更新してから描画
+    if (dynamics === "quat" || dynamics === "scalar") engine.computeQuatMean(); // 重心を更新してから描画
     engine.render(gpu.context);
     requestAnimationFrame(loop);
   };

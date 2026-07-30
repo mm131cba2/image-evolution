@@ -135,6 +135,7 @@ async function main(): Promise<void> {
   let coupling = 1; // quat 代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
   let morph = 1; // lenia の diffusion↔Lenia 核 morph（1=パターン・0=拡散=均す）
   let pattern = 0; // unified の CGL↔SH パターンノブ p（0=四元数CGL・1=Swift-Hohenberg）
+  let wave = 0; // unified の拡散↔波動ノブ a（0=拡散/緩和・→1=波動＝移流に慣性）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -173,6 +174,8 @@ async function main(): Promise<void> {
       engine.setQuatAnchor(anchorStrength, quatM0);
       engine.setCoupling(dynamics === "scalar" ? 0 : coupling); // scalar は結合ゼロ＝成分独立
       engine.setPattern(dynamics === "unified" ? pattern : 0);  // pattern は unified のみ
+      engine.setWave(dynamics === "unified" ? wave : 0);        // wave も unified のみ
+      if (dynamics === "unified") engine.resetVel();            // 波動の慣性を 0 から
       engine.seedQuat(q4);
     } else if (dynamics === "chroma") {
       engine.setChromaYRate(chromaYRate);
@@ -263,6 +266,10 @@ async function main(): Promise<void> {
     onPattern: (v) => {
       pattern = v;
       engine.setPattern(v); // unified の CGL↔SH パターンノブ
+    },
+    onWave: (v) => {
+      wave = v;
+      engine.setWave(v); // unified の拡散↔波動ノブ
     },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {

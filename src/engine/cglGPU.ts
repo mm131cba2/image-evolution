@@ -21,7 +21,7 @@ import {
 import { linearToSrgb } from "../color";
 import type { CGLParams } from "./params";
 
-const PARAMS_BYTES = 80;
+const PARAMS_BYTES = 96;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
 // 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat 5=telegraph 6=swift 7=fhn 8=cahn 9=unified(quat)
 export type DynNum = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -41,7 +41,9 @@ export class CGLEngine {
   private qbuf: [GPUBuffer, GPUBuffer]; // vec4 場（chroma=YCbCr / quat）のピンポン
   private chromaPipeline: GPUComputePipeline; // vec4 色拡散
   private quatPipeline: GPUComputePipeline;
-  private unifiedPipeline: GPUComputePipeline; // 統合形（四元数版）・quatBG を共有
+  private unifiedPipeline: GPUComputePipeline; // 統合形（四元数版）・速度チャンネル付き専用レイアウト
+  private unifiedBG: [GPUBindGroup, GPUBindGroup];
+  private qvel: GPUBuffer; // 統合形の移流速度チャンネル（telegraph・vec4）
   private quatBG: [GPUBindGroup, GPUBindGroup];
   private meanBuf: GPUBuffer; // 共回転後 Im 重心（vec4）
   private quatMeanPipeline: GPUComputePipeline;
@@ -59,6 +61,7 @@ export class CGLEngine {
   private coupling = 1; // quat の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
   private morph = 1; // lenia の diffusion↔Lenia 核 morph（1=Lenia パターン・0=拡散=均す）
   private pattern = 0; // 統合形の CGL↔SH パターンノブ（0=四元数CGL・1=Swift-Hohenberg）
+  private wave = 0; // 統合形の拡散↔波動ノブ a（0=拡散/緩和=1階・→1=波動=移流に慣性）
 
   constructor(
     private device: GPUDevice,
@@ -73,6 +76,7 @@ export class CGLEngine {
     this.maps = [mkStorage(n * 2 * 4), mkStorage(n * 2 * 4)];
     this.mapTmp = mkStorage(n * 2 * 4);
     this.qbuf = [mkStorage(n * 4 * 4), mkStorage(n * 4 * 4)]; // vec4
+    this.qvel = mkStorage(n * 4 * 4); // 統合形の移流速度（telegraph・vec4・ピンポン不要）
     this.meanBuf = mkStorage(4 * 4); // vec4（Im 重心）
 
     this.paramsBuf = device.createBuffer({
@@ -133,7 +137,6 @@ export class CGLEngine {
     // vec4 場（chroma=YCbCr / quat）も同じ step レイアウト（storage in/out + uniform）を共有。
     this.chromaPipeline = mkStep(CHROMA_WGSL);
     this.quatPipeline = mkStep(QUAT_STEP_WGSL);
-    this.unifiedPipeline = mkStep(UNIFIED_QUAT_STEP_WGSL);
     this.quatBG = [
       device.createBindGroup({
         layout: stepBGL,
@@ -152,6 +155,31 @@ export class CGLEngine {
         ],
       }),
     ];
+    // 統合形は速度チャンネル(binding 3・read_write storage)を持つ専用 4 バインドレイアウト。
+    const unifiedBGL = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ],
+    });
+    this.unifiedPipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [unifiedBGL] }),
+      compute: { module: device.createShaderModule({ code: UNIFIED_QUAT_STEP_WGSL }), entryPoint: "main" },
+    });
+    const mkUnified = (inB: GPUBuffer, outB: GPUBuffer): GPUBindGroup =>
+      device.createBindGroup({
+        layout: unifiedBGL,
+        entries: [
+          { binding: 0, resource: { buffer: inB } },
+          { binding: 1, resource: { buffer: outB } },
+          { binding: 2, resource: { buffer: this.paramsBuf } },
+          { binding: 3, resource: { buffer: this.qvel } },
+        ],
+      });
+    this.unifiedBG = [mkUnified(this.qbuf[0], this.qbuf[1]), mkUnified(this.qbuf[1], this.qbuf[0])];
+
     // 重心縮約（qbuf[cur] → meanBuf）。1 ワークグループ・auto レイアウト。
     this.quatMeanPipeline = device.createComputePipeline({
       layout: "auto",
@@ -232,6 +260,16 @@ export class CGLEngine {
     this.pattern = p;
   }
 
+  // 統合形（四元数）の拡散↔波動ノブ a（0=拡散/緩和=1階・→1=波動＝移流に慣性・双曲型反応拡散）。
+  setWave(a: number): void {
+    this.wave = a;
+  }
+
+  // 統合形の移流速度チャンネルを 0 に（再シード時＝波動の慣性をリセットして決定的に開始）。
+  resetVel(): void {
+    this.device.queue.writeBuffer(this.qvel, 0, new Float32Array(this.L * this.L * 4));
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -254,6 +292,7 @@ export class CGLEngine {
     dv.setFloat32(68, this.coupling, true);
     dv.setFloat32(72, this.morph, true);
     dv.setFloat32(76, this.pattern, true);
+    dv.setFloat32(80, this.wave, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -320,7 +359,7 @@ export class CGLEngine {
       : this.dynamics === 9 ? this.unifiedPipeline
       : this.dynamics === 3 ? this.chromaPipeline
       : this.stepPipelines[this.dynamics];
-    const bgs = isVec4 ? this.quatBG : this.computeBG;
+    const bgs = this.dynamics === 9 ? this.unifiedBG : isVec4 ? this.quatBG : this.computeBG;
     const enc = this.device.createCommandEncoder();
     const wg = Math.ceil(this.L / 8);
     for (let i = 0; i < times; i++) {

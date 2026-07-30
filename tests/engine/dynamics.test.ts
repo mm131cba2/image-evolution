@@ -345,6 +345,52 @@ describe("unifiedQuatStep（統合形・四元数・CGL↔SH の 1 場実装）"
     expect(bounded(q, 5)).toBe(true);
     expect(std(q)).toBeGreaterThan(0.05); // パターンが立っている
   });
+
+  // --- telegraph（拡散↔波動）ノブ a：移流だけに慣性・a=0 で 1 階に厳密一致 ---
+  it("wave=0（vel 有）は 1 階＝quatCglStep と厳密一致（strict superset）", () => {
+    const L = 8, n = L * L;
+    const q1 = new Float32Array(n * 4), q2 = new Float32Array(n * 4);
+    for (let i = 0; i < n * 4; i++) { q1[i] = 0.3 * Math.sin(i * 1.3); q2[i] = q1[i]; }
+    const vel = new Float32Array(n * 4); // a=0 なので中身は無視されるはず
+    const p = { b: 0.5, c: 0.9, D: 2, dt: 0.02, coupling: 0.8 };
+    for (let s = 0; s < 12; s++) {
+      unifiedQuatStep(q1, L, { ...p, wave: 0, vel });
+      quatCglStep(q2, L, p);
+    }
+    for (let i = 0; i < n * 4; i++) expect(q1[i]).toBeCloseTo(q2[i], 6);
+  });
+
+  it("wave>0 は移流に慣性が入り 1 階と異なる（速度チャンネルが働く）・有界", () => {
+    const L = 24, n = L * L;
+    const { re } = photoField(L);
+    const q0 = new Float32Array(n * 4), qw = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { q0[i * 4] = 0.2 * re[i]; qw[i * 4] = q0[i * 4]; }
+    const vel = new Float32Array(n * 4);
+    const p = { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1 };
+    for (let s = 0; s < 200; s++) {
+      unifiedQuatStep(q0, L, { ...p, wave: 0 });      // 1 階
+      unifiedQuatStep(qw, L, { ...p, wave: 0.9, vel }); // 波動
+    }
+    let diff = 0, velMag = 0;
+    for (let i = 0; i < n * 4; i++) { diff += Math.abs(qw[i] - q0[i]); velMag += Math.abs(vel[i]); }
+    expect(diff).toBeGreaterThan(1e-2); // 慣性で軌道が変わる
+    expect(velMag).toBeGreaterThan(0);  // 速度チャンネルが populate される
+    expect(bounded(qw, 6)).toBe(true);  // 発散しない
+  });
+
+  it("wave 大でも反応が 1 階＝飽和で有界（p=1,λ=1,a=0.9 の最難隅）", () => {
+    const L = 24, n = L * L;
+    const { re } = photoField(L);
+    const q = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      q[i * 4] = 0.1 * re[i];
+      q[i * 4 + 1] = 0.05 * Math.sin(i * 0.2);
+    }
+    const vel = new Float32Array(n * 4);
+    for (let s = 0; s < 2000; s++)
+      unifiedQuatStep(q, L, { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1, pattern: 1, wave: 0.9, vel });
+    expect(bounded(q, 6)).toBe(true); // SH×慣性でも cubic 飽和で有界
+  });
 });
 
 describe("YCbCr 往復", () => {

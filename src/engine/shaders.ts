@@ -4,7 +4,7 @@
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
 //   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
 //   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate 64:gamma 68:coupling
-//   72:morph 76:pattern （80 バイト）
+//   72:morph 76:pattern 80:wave 84..92:pad （96 バイト＝16 の倍数）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
@@ -12,6 +12,7 @@ struct Params {
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
   gamma: f32, coupling: f32, morph: f32, pattern: f32,
+  wave: f32, _p7: f32, _p8: f32, _p9: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -179,14 +180,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
-// 統合形（四元数版）。状態 q=vec4(w,x,y,z)。CPU 参照 dynamics.ts unifiedQuatStep と 1:1。
-// 四元数 CGL に SH の ∇⁴ パターン項を pattern p で連続に接ぐ（p=0 で QUAT_STEP と一致）。
-// coupling λ=scalar↔quat（ℝ⁴↔ℍ）・pattern p=CGL(k=0)↔SH(有限 k)。checks/unified-quat.py 実証。
+// 統合形（四元数版）。状態 q=vec4(w,x,y,z)＋速度 vel=vec4。CPU 参照 dynamics.ts unifiedQuatStep と 1:1。
+// 3 直交ノブで統合形の 3 軸を 1 場で走査（checks/unified-quat.py・unified-telegraph.py 実証）:
+//   coupling λ=場の代数（scalar ℝ⁴ ↔ quat ℍ）／pattern p=σ(k) ピーク（CGL k=0 ↔ SH 有限 k）／
+//   wave a=時間の階数（拡散/緩和 ↔ 波動）。a は移流(拡散項)だけに慣性を掛ける双曲型反応拡散
+//   （反応は 1 階＝飽和で有界）。a=0 で QUAT_STEP と厳密一致（strict superset）。
 export const UNIFIED_QUAT_STEP_WGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
 @group(0) @binding(0) var<storage, read> inBuf: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> outBuf: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> P: Params;
+@group(0) @binding(3) var<storage, read_write> vel: array<vec4<f32>>;  // 移流の速度チャンネル
 fn at(x: i32, y: i32, L: i32) -> vec4<f32> {
   return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
 }
@@ -226,9 +230,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s = 0.57735027;
   let Ab = vec4<f32>(1.0, lam*P.b*s, lam*P.b*s, lam*P.b*s);
   let Ac = vec4<f32>(1.0, lam*P.c*s, lam*P.c*s, lam*P.c*s);
-  let diff = qmul(Ab, aL * lap);
-  let nl = qmul(Ac, n2 * q);
-  outBuf[c] = q + dtEff * (a0 * q + diff + a4 * b4 - nl);
+  let T = qmul(Ab, aL * lap);                  // 移流（拡散項・telegraph 対象）
+  let Rx = a0 * q + a4 * b4 - qmul(Ac, n2 * q); // 反応（1 階＝飽和）
+  // 慣性フィルタ v←a·v+(1−a)·T（a=0 で v=T＝現行の 1 階に厳密一致）。
+  let a = P.wave;
+  var v = T;
+  if (a > 0.0) { v = a * vel[c] + (1.0 - a) * T; vel[c] = v; }
+  outBuf[c] = q + dtEff * (v + Rx);
 }
 `;
 

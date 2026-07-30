@@ -46,6 +46,7 @@ export interface ControlCallbacks {
   onCoupling: (v: number) => void;
   onMorph: (v: number) => void;
   onPattern: (v: number) => void;
+  onWave: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -356,6 +357,30 @@ export function buildControls(
       const v = parseFloat(input.value);
       value.textContent = v.toFixed(2);
       cb.onPattern(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "unified");
+  }
+
+  // 統合形（四元数）の拡散↔波動ノブ a（0=拡散/緩和＝1階・→1=波動＝移流に慣性でリンギング/伝播。
+  // 結合 λ・模様 p と直交する 3 本目の橋＝時間の階数・双曲型反応拡散・checks/unified-telegraph.py）。
+  // 上限 0.97（a→1 は無減衰で凍結/発散するため）。
+  {
+    const { row: r, value } = row("波");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "0.97";
+    input.step = "0.01";
+    input.value = "0";
+    input.style.flex = "1";
+    value.textContent = "0.00";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onWave(v);
     });
     r.appendChild(input);
     r.appendChild(value);

@@ -171,6 +171,58 @@ export function quatCglStep(
   }
 }
 
+// ---------------------------------------------------------------------------
+// 統合形（四元数版）。状態 q=(w,x,y,z)。四元数 CGL に Swift-Hohenberg の ∇⁴ パターン項を
+// 連続ノブ pattern p∈[0,1] で接ぐ＝統合形 ∂q=α0·q+(1+λbI)(αL∇²q)+α4∇⁴q−(1+λcI)(n²⊙q) を
+// ℍ 上で 1 ステップ実装（checks/unified-quat.py で四隅を実証）:
+//   p=0        … 厳密に四元数 CGL（k=0 リミットサイクル・|q|→1）＝quatCglStep と一致（strict superset）。
+//   p=1, λ=0   … 成分ごとの Swift-Hohenberg（−0.5u−2∇²u−∇⁴u−u³・有限 k の縞）。
+//   λ (coupling)＝quatCglStep と同じ scalar↔quat ノブ（ℝ⁴↔ℍ）。2 ノブで §9 のアトラクタ平面
+//                （代数 × σ(k) ピーク位置）を 1 場・1 ステップで走査。
+//   係数 morph（mix(a,b,p)=a+(b−a)p・r=0.5）: α0=mix(1,r−1,p)・αL=mix(D,−2,p)・α4=−p。
+//   dt は p が立つほど 0.02 で頭打ち（SH の陽的安定・GPU と一致）。
+// ---------------------------------------------------------------------------
+export function unifiedQuatStep(
+  q: Float32Array,
+  L: number,
+  p: { b: number; c: number; D: number; dt: number; coupling?: number; pattern?: number },
+): void {
+  const n = L * L;
+  const { b, c, D } = p;
+  const lam = p.coupling ?? 1;
+  const pat = p.pattern ?? 0;
+  const r = 0.5;
+  const a0 = 1 + (r - 2) * pat;      // mix(1, r−1, pat)＝1−1.5p（p=1 で SH の自己項 r−1=−0.5）
+  const aL = D + (-2 - D) * pat;      // mix(D, −2, pat)（p=1 で SH の −2∇²）
+  const a4 = -pat;                    // mix(0, −1, pat)（p=1 で SH の −∇⁴）
+  const dt = p.dt + (Math.min(p.dt, 0.02) - p.dt) * pat; // mix(dt, min(dt,0.02), pat)
+  const bb = lam * b, cc = lam * c;
+  const [Ix, Iy, Iz] = QUAT_AXIS;
+  const comp = new Float32Array(n);
+  const lap = [new Float32Array(n), new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  const bih = [new Float32Array(n), new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+  for (let k = 0; k < 4; k++) {
+    for (let i = 0; i < n; i++) comp[i] = q[i * 4 + k];
+    lapReflect(comp, L, lap[k]);
+    biharmReflect(comp, L, bih[k]);
+  }
+  for (let i = 0; i < n; i++) {
+    const w = q[i * 4], x = q[i * 4 + 1], y = q[i * 4 + 2], z = q[i * 4 + 3];
+    const m2 = w * w + x * x + y * y + z * z;
+    const nw2 = (1 - lam) * w * w + lam * m2;
+    const nx2 = (1 - lam) * x * x + lam * m2;
+    const ny2 = (1 - lam) * y * y + lam * m2;
+    const nz2 = (1 - lam) * z * z + lam * m2;
+    const lw = lap[0][i], lx = lap[1][i], ly = lap[2][i], lz = lap[3][i];
+    const [dw, dx, dy, dz] = qmul(1, bb * Ix, bb * Iy, bb * Iz, aL * lw, aL * lx, aL * ly, aL * lz);
+    const [nw, nx, ny, nz] = qmul(1, cc * Ix, cc * Iy, cc * Iz, nw2 * w, nx2 * x, ny2 * y, nz2 * z);
+    q[i * 4] = w + dt * (a0 * w + dw + a4 * bih[0][i] - nw);
+    q[i * 4 + 1] = x + dt * (a0 * x + dx + a4 * bih[1][i] - nx);
+    q[i * 4 + 2] = y + dt * (a0 * y + dy + a4 * bih[2][i] - ny);
+    q[i * 4 + 3] = z + dt * (a0 * z + dz + a4 * bih[3][i] - nz);
+  }
+}
+
 // 壁(clamp)境界の 13 点 biharmonic ∇⁴u = ∇²(∇²u)（5点ラプラシアンの自己合成）。
 // = 20c −8(N+S+E+W) +2(斜め4) +(NN+SS+EE+WW)。SH/CH の 4 階項に使う。
 function biharmReflect(f: Float32Array, L: number, out: Float32Array): void {

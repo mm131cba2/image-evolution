@@ -3,14 +3,15 @@
 //
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
 //   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
-//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate 64:gamma 68..:pad （80 バイト）
+//   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate 64:gamma 68:coupling
+//   72:morph 76:pattern （80 バイト）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
   dt: f32, ampRef: f32, speed: f32, mode: u32,
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
-  gamma: f32, coupling: f32, morph: f32, _p6: f32,
+  gamma: f32, coupling: f32, morph: f32, pattern: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -175,6 +176,59 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let diff = qmul(Ab, P.D * lap);
   let nl = qmul(Ac, n2 * q);
   outBuf[c] = q + P.dt * (q + diff - nl);
+}
+`;
+
+// 統合形（四元数版）。状態 q=vec4(w,x,y,z)。CPU 参照 dynamics.ts unifiedQuatStep と 1:1。
+// 四元数 CGL に SH の ∇⁴ パターン項を pattern p で連続に接ぐ（p=0 で QUAT_STEP と一致）。
+// coupling λ=scalar↔quat（ℝ⁴↔ℍ）・pattern p=CGL(k=0)↔SH(有限 k)。checks/unified-quat.py 実証。
+export const UNIFIED_QUAT_STEP_WGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> inBuf: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> outBuf: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> P: Params;
+fn at(x: i32, y: i32, L: i32) -> vec4<f32> {
+  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
+}
+fn qmul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(
+    a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+    a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+    a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+    a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x,
+  );
+}
+// vec4 biharmonic ∇⁴q（13 点・clamp 境界・dynamics.ts biharmReflect と一致）。
+fn bih4(x: i32, y: i32, L: i32) -> vec4<f32> {
+  return 20.0*at(x,y,L)
+    - 8.0*(at(x,y-1,L)+at(x,y+1,L)+at(x-1,y,L)+at(x+1,y,L))
+    + 2.0*(at(x+1,y-1,L)+at(x-1,y-1,L)+at(x+1,y+1,L)+at(x-1,y+1,L))
+    + (at(x,y-2,L)+at(x,y+2,L)+at(x-2,y,L)+at(x+2,y,L));
+}
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let L = i32(P.L);
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= L || y >= L) { return; }
+  let c = u32(y * L + x);
+  let q = inBuf[c];
+  let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * q;
+  let b4 = bih4(x, y, L);
+  let lam = P.coupling;
+  let pat = P.pattern;
+  let r = 0.5;
+  let a0 = 1.0 + (r - 2.0) * pat;              // mix(1, r−1, pat)
+  let aL = P.D + (-2.0 - P.D) * pat;           // mix(D, −2, pat)
+  let a4 = -pat;                               // mix(0, −1, pat)
+  let dtEff = P.dt + (min(P.dt, 0.02) - P.dt) * pat;
+  let m2 = dot(q, q);
+  let n2 = mix(q * q, vec4<f32>(m2), lam);
+  let s = 0.57735027;
+  let Ab = vec4<f32>(1.0, lam*P.b*s, lam*P.b*s, lam*P.b*s);
+  let Ac = vec4<f32>(1.0, lam*P.c*s, lam*P.c*s, lam*P.c*s);
+  let diff = qmul(Ab, aL * lap);
+  let nl = qmul(Ac, n2 * q);
+  outBuf[c] = q + dtEff * (a0 * q + diff + a4 * b4 - nl);
 }
 `;
 
@@ -508,8 +562,8 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     // 色拡散: 発展した (Y,Cb,Cr) をそのまま表示（Y も yrate>0 で発展する）。
     let q = quatField[c];
     outc = clamp(ycbcr2rgb(q.x, q.y, q.z), vec3<f32>(0.0), vec3<f32>(1.0));
-  } else if (P.dynamics == 4u) {
-    // 四元数（全色発展）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
+  } else if (P.dynamics == 4u || P.dynamics == 9u) {
+    // 四元数（全色発展）/ 統合（四元数）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
     var q = quatField[c];
     let s3 = 0.57735027; // 1/√3（軸 I=(1,1,1)/√3）
     // 共回転: exp(phaseRef·I)⊗q で均質左回転を相殺（phaseRef=0 なら回る）。

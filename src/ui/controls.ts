@@ -45,6 +45,7 @@ export interface ControlCallbacks {
   onGamma: (v: number) => void;
   onCoupling: (v: number) => void;
   onMorph: (v: number) => void;
+  onPattern: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -110,9 +111,9 @@ export function buildControls(
     for (const t of tracked) t.el.style.display = t.show(curDyn, curMode) ? t.shown : "none";
   };
   const isCgl = (d: Dynamics): boolean => d === "cgl";
-  const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "quat"; // b,c を使う
+  const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "quat" || d === "unified"; // b,c を使う
   const usesDiff = (d: Dynamics): boolean =>
-    d === "cgl" || d === "chroma" || d === "quat" || d === "scalar"; // D,dt
+    d === "cgl" || d === "chroma" || d === "quat" || d === "scalar" || d === "unified"; // D,dt
 
   // 力学エンジン選択（最上位・常時）。
   const dynRow = document.createElement("div");
@@ -125,6 +126,7 @@ export function buildControls(
     ["chroma", "力学: 色拡散（YCbCr）"],
     ["quat", "力学: 四元数（全色発展）"],
     ["scalar", "力学: 実数スカラー（全色・独立）"],
+    ["unified", "力学: 統一（四元数・CGL↔パターン）"],
     ["telegraph", "力学: 電信方程式（拡散↔波動）"],
     ["swifthohenberg", "力学: Swift-Hohenberg（縞）"],
     ["fitzhugh", "力学: FitzHugh-Nagumo（興奮性）"],
@@ -312,10 +314,11 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
-    track(r, (d) => d === "quat" || d === "scalar"); // 元色アンカーは quat/scalar 共通
+    track(r, (d) => d === "quat" || d === "scalar" || d === "unified"); // 元色アンカーは quat/scalar/unified 共通
   }
 
   // 四元数モードの代数結合 λ（1=四元数=色相回転・彩度保持／0=成分独立=褪色）。scalar↔quat ノブ。
+  // unified でも同じ λ 軸（ℝ⁴↔ℍ）が効く。
   {
     const { row: r, value } = row("結合");
     const input = document.createElement("input");
@@ -334,7 +337,30 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
-    track(r, (d) => d === "quat");
+    track(r, (d) => d === "quat" || d === "unified");
+  }
+
+  // 統合形（四元数）の CGL↔SH パターンノブ p（0=四元数CGL＝k=0 リミットサイクル・
+  // 1=Swift-Hohenberg＝有限 k の縞。結合 λ と直交する 2 本目の橋・checks/unified-quat.py）。
+  {
+    const { row: r, value } = row("模様");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "0";
+    input.style.flex = "1";
+    value.textContent = "0.00";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onPattern(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "unified");
   }
 
   // 色拡散(chroma)の輝度拡散率（0=Y固定=形保持・>0=形も溶ける）。

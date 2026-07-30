@@ -4,6 +4,7 @@ import {
   leniaStep,
   chromaStep,
   quatCglStep,
+  unifiedQuatStep,
   waveStep,
   swiftHohenbergStep,
   fitzHughNagumoStep,
@@ -286,6 +287,63 @@ describe("cahnHilliardStep（相分離）", () => {
     for (let s = 0; s < 3000; s++) cahnHilliardStep(re, im, L);
     expect(bounded(re, 2)).toBe(true); // 発散しない
     expect(std(re)).toBeGreaterThan(0.3); // ±ドメインへ分離
+  });
+});
+
+describe("unifiedQuatStep（統合形・四元数・CGL↔SH の 1 場実装）", () => {
+  it("p=0 は quatCglStep と厳密一致（strict superset＝四元数CGL を含む）", () => {
+    const L = 8, n = L * L;
+    const q1 = new Float32Array(n * 4), q2 = new Float32Array(n * 4);
+    for (let i = 0; i < n * 4; i++) { q1[i] = 0.3 * Math.sin(i * 1.1); q2[i] = q1[i]; }
+    const p = { b: 0.5, c: 0.9, D: 2, dt: 0.02, coupling: 0.7 };
+    for (let s = 0; s < 12; s++) {
+      unifiedQuatStep(q1, L, { ...p, pattern: 0 });
+      quatCglStep(q2, L, p);
+    }
+    for (let i = 0; i < n * 4; i++) expect(q1[i]).toBeCloseTo(q2[i], 6);
+  });
+
+  it("既定（pattern 省略）も quatCglStep と一致（従来挙動を保つ）", () => {
+    const L = 6, n = L * L;
+    const q1 = new Float32Array(n * 4), q2 = new Float32Array(n * 4);
+    for (let i = 0; i < n * 4; i++) { q1[i] = Math.cos(i * 0.7); q2[i] = q1[i]; }
+    const p = { b: 0.4, c: 0.6, D: 1.5, dt: 0.02 };
+    for (let s = 0; s < 8; s++) { unifiedQuatStep(q1, L, p); quatCglStep(q2, L, p); }
+    for (let i = 0; i < n * 4; i++) expect(q1[i]).toBeCloseTo(q2[i], 6);
+  });
+
+  it("p=1, λ=0 は成分ごと Swift-Hohenberg（縞が育つ・有界）かつ成分独立", () => {
+    const L = 32, n = L * L;
+    const { re } = photoField(L);
+    const q = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) q[i * 4] = 0.2 * re[i]; // w 成分だけ小さく種・x,y,z=0
+    for (let s = 0; s < 2500; s++)
+      unifiedQuatStep(q, L, { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 0, pattern: 1 });
+    const w = new Float32Array(n);
+    let leak = 0;
+    for (let i = 0; i < n; i++) {
+      w[i] = q[i * 4];
+      leak = Math.max(leak, Math.abs(q[i * 4 + 1]), Math.abs(q[i * 4 + 2]), Math.abs(q[i * 4 + 3]));
+    }
+    expect(bounded(w, 2)).toBe(true);    // 発散しない
+    expect(std(w)).toBeGreaterThan(0.2); // 有限 k の縞へ自己組織化（swiftHohenbergStep と同型）
+    expect(leak).toBeLessThan(1e-6);     // λ=0＝他成分へ漏れない（ℝ⁴ 独立）
+  });
+
+  it("p=1, λ=1（四元数SH）は有界（色つきパターン・発散しない）", () => {
+    const L = 32, n = L * L;
+    const { re } = photoField(L);
+    const q = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      q[i * 4] = 0.15 * re[i];
+      q[i * 4 + 1] = 0.1 * Math.sin(i * 0.2);
+      q[i * 4 + 2] = 0.1 * Math.cos(i * 0.15);
+      q[i * 4 + 3] = 0.05 * Math.sin(i * 0.09);
+    }
+    for (let s = 0; s < 2500; s++)
+      unifiedQuatStep(q, L, { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1, pattern: 1 });
+    expect(bounded(q, 5)).toBe(true);
+    expect(std(q)).toBeGreaterThan(0.05); // パターンが立っている
   });
 });
 

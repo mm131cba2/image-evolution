@@ -9,10 +9,11 @@ export type Mode = "A" | "B" | "blend";
 
 // 力学エンジン。mode(A/B/blend) は cgl のみ有効。
 // cgl=複素GL / grayscott=反応拡散(Turing) / lenia=連続ライフ / chroma=色拡散 /
-// quat=四元数(全色発展) / telegraph=電信方程式(拡散↔波動の統一) /
-// swifthohenberg=縞・六方 / fitzhugh=興奮性(伝播波) / cahnhilliard=相分離。
+// quat=四元数(全色発展) / scalar=実数スカラー(全色・独立) / unified=統合形(四元数・CGL↔SH) /
+// telegraph=電信方程式(拡散↔波動の統一) / swifthohenberg=縞・六方 /
+// fitzhugh=興奮性(伝播波) / cahnhilliard=相分離。
 export type Dynamics =
-  | "cgl" | "grayscott" | "lenia" | "chroma" | "quat" | "scalar"
+  | "cgl" | "grayscott" | "lenia" | "chroma" | "quat" | "scalar" | "unified"
   | "telegraph" | "swifthohenberg" | "fitzhugh" | "cahnhilliard";
 
 export interface AppConfig {
@@ -36,7 +37,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 const MODES: readonly Mode[] = ["A", "B", "blend"];
 const SEEDS: readonly Seed[] = ["color", "phase", "amp"];
 const DYNAMICS: readonly Dynamics[] = [
-  "cgl", "grayscott", "lenia", "chroma", "quat", "scalar",
+  "cgl", "grayscott", "lenia", "chroma", "quat", "scalar", "unified",
   "telegraph", "swifthohenberg", "fitzhugh", "cahnhilliard",
 ];
 

@@ -8,6 +8,7 @@ import {
   LENIA_WGSL,
   CHROMA_WGSL,
   QUAT_STEP_WGSL,
+  UNIFIED_QUAT_STEP_WGSL,
   QUAT_MEAN_WGSL,
   TELEGRAPH_WGSL,
   SWIFT_WGSL,
@@ -22,8 +23,8 @@ import type { CGLParams } from "./params";
 
 const PARAMS_BYTES = 80;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
-// 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat 5=telegraph 6=swift 7=fhn 8=cahn
-export type DynNum = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+// 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat 5=telegraph 6=swift 7=fhn 8=cahn 9=unified(quat)
+export type DynNum = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export class CGLEngine {
   private cur = 0; // psi parity（最新）
@@ -40,6 +41,7 @@ export class CGLEngine {
   private qbuf: [GPUBuffer, GPUBuffer]; // vec4 場（chroma=YCbCr / quat）のピンポン
   private chromaPipeline: GPUComputePipeline; // vec4 色拡散
   private quatPipeline: GPUComputePipeline;
+  private unifiedPipeline: GPUComputePipeline; // 統合形（四元数版）・quatBG を共有
   private quatBG: [GPUBindGroup, GPUBindGroup];
   private meanBuf: GPUBuffer; // 共回転後 Im 重心（vec4）
   private quatMeanPipeline: GPUComputePipeline;
@@ -56,6 +58,7 @@ export class CGLEngine {
   private gamma = 0.05; // telegraph の減衰（0→波動・大→拡散）
   private coupling = 1; // quat の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
   private morph = 1; // lenia の diffusion↔Lenia 核 morph（1=Lenia パターン・0=拡散=均す）
+  private pattern = 0; // 統合形の CGL↔SH パターンノブ（0=四元数CGL・1=Swift-Hohenberg）
 
   constructor(
     private device: GPUDevice,
@@ -130,6 +133,7 @@ export class CGLEngine {
     // vec4 場（chroma=YCbCr / quat）も同じ step レイアウト（storage in/out + uniform）を共有。
     this.chromaPipeline = mkStep(CHROMA_WGSL);
     this.quatPipeline = mkStep(QUAT_STEP_WGSL);
+    this.unifiedPipeline = mkStep(UNIFIED_QUAT_STEP_WGSL);
     this.quatBG = [
       device.createBindGroup({
         layout: stepBGL,
@@ -223,6 +227,11 @@ export class CGLEngine {
     this.morph = m;
   }
 
+  // 統合形（四元数）の CGL↔SH パターンノブ p（0=四元数CGL＝k=0 リミットサイクル・1=Swift-Hohenberg＝有限 k 模様）。
+  setPattern(p: number): void {
+    this.pattern = p;
+  }
+
   setState(p: CGLParams, mode: ModeNum, blend: number, phaseRef = 0, ampRef = 1.0): void {
     const dv = new DataView(this.paramsHost);
     dv.setUint32(0, this.L, true);
@@ -244,6 +253,7 @@ export class CGLEngine {
     dv.setFloat32(64, this.gamma, true);
     dv.setFloat32(68, this.coupling, true);
     dv.setFloat32(72, this.morph, true);
+    dv.setFloat32(76, this.pattern, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 
@@ -303,10 +313,11 @@ export class CGLEngine {
   }
 
   // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
-  // dynamics 3(chroma)/4(quat) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
+  // dynamics 3(chroma)/4(quat)/9(unified) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
   stepCGL(times: number): void {
-    const isVec4 = this.dynamics === 3 || this.dynamics === 4;
+    const isVec4 = this.dynamics === 3 || this.dynamics === 4 || this.dynamics === 9;
     const pipe = this.dynamics === 4 ? this.quatPipeline
+      : this.dynamics === 9 ? this.unifiedPipeline
       : this.dynamics === 3 ? this.chromaPipeline
       : this.stepPipelines[this.dynamics];
     const bgs = isVec4 ? this.quatBG : this.computeBG;

@@ -171,29 +171,75 @@ export function quatCglStep(
   }
 }
 
+// 統合形の life ノブ用：色データを [0,1] 相当へ写して**成分ごとに** Asymptotic Lenia を 1 歩
+// 進めた次状態を返す（自己正規化ガウス殻リング核・指数オイラー・checks/unified-lenia.py）。
+// color-tuned：off/scale で色(中心化 ~[−0.5,0.5])を [0,1] 相当へ、μ を中域に置き**写真シードでも
+// 褪色せず非局所構造を保つ**（生[0,1] データなら off=0,scale=1,μ=0.15 で標準 Lenia に一致）。
+export const UNIFIED_LIFE = { mu: 0.35, sigma: 0.12, off: 0.5, scale: 0.7, R: 8, kr0: 0.5, kw: 0.15, dtL: 0.3 } as const;
+
+function leniaNextQuat(q: Float32Array, L: number): Float32Array {
+  const n = L * L;
+  const out = new Float32Array(n * 4);
+  const { mu, sigma, off, scale, R, kr0, kw, dtL } = UNIFIED_LIFE;
+  const decay = Math.exp(-dtL);
+  for (let y = 0; y < L; y++) {
+    for (let x = 0; x < L; x++) {
+      let accW = 0, aw0 = 0, ax0 = 0, ay0 = 0, az0 = 0; // 成分ごとの重み付き和（shifted frame）
+      for (let dy = -R; dy <= R; dy++) {
+        const yy = Math.min(L - 1, Math.max(0, y + dy));
+        for (let dx = -R; dx <= R; dx++) {
+          const rr = Math.hypot(dx, dy) / R;
+          if (rr > 1 || rr === 0) continue;
+          const wv = bell(rr, kr0, kw);
+          const j = (yy * L + Math.min(L - 1, Math.max(0, x + dx))) * 4;
+          accW += wv;
+          aw0 += wv * (q[j] * scale + off);
+          ax0 += wv * (q[j + 1] * scale + off);
+          ay0 += wv * (q[j + 2] * scale + off);
+          az0 += wv * (q[j + 3] * scale + off);
+        }
+      }
+      const i = (y * L + x) * 4;
+      const invW = accW > 0 ? 1 / accW : 0;
+      const acc = [aw0, ax0, ay0, az0];
+      for (let k = 0; k < 4; k++) {
+        const G = bell(acc[k] * invW, mu, sigma);       // shifted frame の正規化ポテンシャル→成長ベル
+        const u = q[i + k] * scale + off;
+        out[i + k] = (decay * u + (1 - decay) * G - off) / scale; // 指数オイラー→色フレームへ戻す
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // 統合形（四元数版）。状態 q=(w,x,y,z)。統合形 ∂q=α0·q+(1+λbI)(αL∇²q)+α4∇⁴q−(1+λcI)(n²⊙q) を
-// ℍ 上で 1 ステップ実装。3 直交ノブで統合形の 3 軸を走査（checks/unified-quat.py・unified-telegraph.py）:
+// ℍ 上で 1 ステップ実装。4 直交ノブで統合形の軸を走査（checks/unified-quat.py・-telegraph.py・-lenia.py）:
 //   coupling λ … 場の代数（scalar ℝ⁴ ↔ quat ℍ・quatCglStep と同じ）。
 //   pattern p  … σ(k) ピーク位置（CGL 拡散 k=0 リミットサイクル ↔ SH −(1+∇²)² 有限 k）。
 //                係数 morph（mix(a,b,p)=a+(b−a)p・r=0.5）: α0=mix(1,r−1,p)・αL=mix(D,−2,p)・α4=−p。
 //   wave a     … 時間の階数（拡散/緩和 ↔ 波動）。移流(拡散項 T)だけに 1 極慣性フィルタ
 //                v←a·v+(1−a)·T を掛け、反応(自己増殖+∇⁴+cubic)は 1 階に保つ＝双曲型反応拡散
 //                （Cattaneo・飽和で有界）。vel を渡し a>0 のとき有効。
-//   すべて「off」端（p=0, a=0）で quatCglStep と厳密一致（strict superset）。
+//   life k     … 空間結合の局所↔非局所（∇² ↔ Lenia リング核）。**次状態を lerp**：
+//                q←(1−k)·q_unified + k·q_lenia（q_lenia=成分ごと Asymptotic Lenia）。
+//                k=0 で現行 unified に厳密一致、k=1 で（color-tuned）Lenia＝非局所の生命的構造。
+//   すべて「off」端（p=0, a=0, k=0）で quatCglStep と厳密一致（strict superset）。
 //   dt は p が立つほど 0.02 で頭打ち（SH の陽的安定・GPU と一致）。
 // ---------------------------------------------------------------------------
 export function unifiedQuatStep(
   q: Float32Array,
   L: number,
-  p: { b: number; c: number; D: number; dt: number; coupling?: number; pattern?: number; wave?: number; vel?: Float32Array },
+  p: { b: number; c: number; D: number; dt: number; coupling?: number; pattern?: number; wave?: number; vel?: Float32Array; life?: number },
 ): void {
   const n = L * L;
   const { b, c, D } = p;
   const lam = p.coupling ?? 1;
   const pat = p.pattern ?? 0;
   const a = p.wave ?? 0;
+  const life = p.life ?? 0;
   const vel = p.vel;
+  const qL = life > 0 ? leniaNextQuat(q, L) : undefined; // 非局所 Lenia の次状態（元 q から）
   const r = 0.5;
   const a0 = 1 + (r - 2) * pat;      // mix(1, r−1, pat)＝1−1.5p（p=1 で SH の自己項 r−1=−0.5）
   const aL = D + (-2 - D) * pat;      // mix(D, −2, pat)（p=1 で SH の −2∇²）
@@ -225,20 +271,30 @@ export function unifiedQuatStep(
     const Rx = a0 * x + a4 * bih[1][i] - nx;
     const Ry = a0 * y + a4 * bih[2][i] - ny;
     const Rz = a0 * z + a4 * bih[3][i] - nz;
+    // 移流の慣性フィルタ（wave a>0 のとき・そうでなければ tw=dw ＝素の移流）。
+    let tw = dw, tx = dx, ty = dy, tz = dz;
     if (useWave) {
-      const vw = a * vel![i * 4] + (1 - a) * dw; vel![i * 4] = vw;
-      const vx = a * vel![i * 4 + 1] + (1 - a) * dx; vel![i * 4 + 1] = vx;
-      const vy = a * vel![i * 4 + 2] + (1 - a) * dy; vel![i * 4 + 2] = vy;
-      const vz = a * vel![i * 4 + 3] + (1 - a) * dz; vel![i * 4 + 3] = vz;
-      q[i * 4] = w + dt * (vw + Rw);
-      q[i * 4 + 1] = x + dt * (vx + Rx);
-      q[i * 4 + 2] = y + dt * (vy + Ry);
-      q[i * 4 + 3] = z + dt * (vz + Rz);
+      tw = a * vel![i * 4] + (1 - a) * dw; vel![i * 4] = tw;
+      tx = a * vel![i * 4 + 1] + (1 - a) * dx; vel![i * 4 + 1] = tx;
+      ty = a * vel![i * 4 + 2] + (1 - a) * dy; vel![i * 4 + 2] = ty;
+      tz = a * vel![i * 4 + 3] + (1 - a) * dz; vel![i * 4 + 3] = tz;
+    }
+    // 統合形（局所）の次状態。
+    const qw = w + dt * (tw + Rw);
+    const qx = x + dt * (tx + Rx);
+    const qy = y + dt * (ty + Ry);
+    const qz = z + dt * (tz + Rz);
+    if (life > 0) {
+      // 非局所 Lenia の次状態と lerp（k=0 で局所・k=1 で Lenia）。
+      q[i * 4] = (1 - life) * qw + life * qL![i * 4];
+      q[i * 4 + 1] = (1 - life) * qx + life * qL![i * 4 + 1];
+      q[i * 4 + 2] = (1 - life) * qy + life * qL![i * 4 + 2];
+      q[i * 4 + 3] = (1 - life) * qz + life * qL![i * 4 + 3];
     } else {
-      q[i * 4] = w + dt * (dw + Rw);
-      q[i * 4 + 1] = x + dt * (dx + Rx);
-      q[i * 4 + 2] = y + dt * (dy + Ry);
-      q[i * 4 + 3] = z + dt * (dz + Rz);
+      q[i * 4] = qw;
+      q[i * 4 + 1] = qx;
+      q[i * 4 + 2] = qy;
+      q[i * 4 + 3] = qz;
     }
   }
 }

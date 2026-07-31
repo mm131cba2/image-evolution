@@ -367,6 +367,56 @@ describe("unifiedQuatStep（統合形・四元数・CGL↔SH の 1 場実装）"
       unifiedQuatStep(q, L, { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1, pattern: 1, wave: 0.9, vel });
     expect(bounded(q, 6)).toBe(true); // SH×慣性でも cubic 飽和で有界
   });
+
+  // --- life（局所↔非局所 Lenia リング核）ノブ ---
+  it("life=0 は現行 unified と厳密一致（strict superset）", () => {
+    const L = 12, n = L * L;
+    const q1 = new Float32Array(n * 4), q2 = new Float32Array(n * 4);
+    for (let i = 0; i < n * 4; i++) { q1[i] = 0.3 * Math.sin(i * 0.9); q2[i] = q1[i]; }
+    const p = { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1, pattern: 0.3 };
+    for (let s = 0; s < 10; s++) {
+      unifiedQuatStep(q1, L, { ...p, life: 0 });
+      unifiedQuatStep(q2, L, p);
+    }
+    for (let i = 0; i < n * 4; i++) expect(q1[i]).toBeCloseTo(q2[i], 6);
+  });
+
+  it("life=1 は非局所リング核（Lenia）＝写真シードで有界・構造化・非市松（滑らか）", () => {
+    const L = 40, n = L * L;
+    const { re } = photoField(L);
+    const q = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      q[i * 4] = 0.35 * re[i];
+      q[i * 4 + 1] = 0.2 * Math.sin(i * 0.2);
+      q[i * 4 + 2] = 0.2 * Math.cos(i * 0.15);
+    }
+    for (let s = 0; s < 400; s++)
+      unifiedQuatStep(q, L, { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1, life: 1 });
+    const w = new Float32Array(n);
+    for (let i = 0; i < n; i++) w[i] = q[i * 4];
+    expect(bounded(q, 3)).toBe(true);       // 発散しない
+    expect(std(w)).toBeGreaterThan(0.03);   // 構造が立つ（褪色しない）
+    // lag-1 空間自己相関 > 0.3（非局所核ゆえ滑らか＝市松/白色でない）。
+    const wm = mean(w);
+    let num = 0, den = 0;
+    for (let y = 0; y < L; y++) for (let x = 0; x < L; x++) {
+      const a0 = w[y * L + x] - wm, a1 = w[y * L + ((x + 1) % L)] - wm;
+      num += a0 * a1; den += a0 * a0;
+    }
+    expect(num / den).toBeGreaterThan(0.3);
+  });
+
+  it("life>0 は life=0 と異なる（非局所核が効く）", () => {
+    const L = 24, n = L * L;
+    const { re } = photoField(L);
+    const q0 = new Float32Array(n * 4), q1 = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { q0[i * 4] = 0.3 * re[i] + 0.1; q1[i * 4] = q0[i * 4]; }
+    const p = { b: 0.5, c: 0.5, D: 4, dt: 0.02, coupling: 1 };
+    for (let s = 0; s < 60; s++) { unifiedQuatStep(q0, L, { ...p, life: 0 }); unifiedQuatStep(q1, L, { ...p, life: 1 }); }
+    let diff = 0;
+    for (let i = 0; i < n * 4; i++) diff += Math.abs(q1[i] - q0[i]);
+    expect(diff).toBeGreaterThan(1e-2);
+  });
 });
 
 describe("YCbCr 往復", () => {

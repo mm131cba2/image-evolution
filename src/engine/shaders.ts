@@ -4,7 +4,7 @@
 // Params レイアウト（48 バイト・cglGPU.ts の writeBuffer と一致させること）:
 //   0:L(u32) 4:b 8:c 12:D 16:dt 20:ampRef 24:speed 28:mode(u32) 32:blend 36:phaseRef
 //   40:dynamics(u32) 44:anchor 48:m0x 52:m0y 56:m0z 60:yrate 64:gamma 68:coupling
-//   72:morph 76:pattern 80:wave 84..92:pad （96 バイト＝16 の倍数）
+//   72:morph 76:pattern 80:wave 84:life 88..92:pad （96 バイト＝16 の倍数）
 const PARAMS_STRUCT = `
 struct Params {
   L: u32, b: f32, c: f32, D: f32,
@@ -12,7 +12,7 @@ struct Params {
   blend: f32, phaseRef: f32, dynamics: u32, anchor: f32,
   m0x: f32, m0y: f32, m0z: f32, yrate: f32,
   gamma: f32, coupling: f32, morph: f32, pattern: f32,
-  wave: f32, _p7: f32, _p8: f32, _p9: f32,
+  wave: f32, life: f32, _p8: f32, _p9: f32,
 };`;
 
 // CGL 1 ステップ（実空間陽解法・壁反射ラプラシアン）。
@@ -167,6 +167,7 @@ fn bih4(x: i32, y: i32, L: i32) -> vec4<f32> {
     + 2.0*(at(x+1,y-1,L)+at(x-1,y-1,L)+at(x+1,y+1,L)+at(x-1,y+1,L))
     + (at(x,y-2,L)+at(x,y+2,L)+at(x-2,y,L)+at(x+2,y,L));
 }
+fn bellf(v: f32, m: f32, s: f32) -> f32 { let d = (v - m) / s; return exp(-0.5 * d * d); }
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let L = i32(P.L);
@@ -194,7 +195,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let a = P.wave;
   var v = T;
   if (a > 0.0) { v = a * vel[c] + (1.0 - a) * T; vel[c] = v; }
-  outBuf[c] = q + dtEff * (v + Rx);
+  var qOut = q + dtEff * (v + Rx);              // 統合形（局所）の次状態
+  // life k: 非局所リング核 Lenia の次状態と lerp（k=0 で局所のまま＝strict superset）。
+  // CPU 参照 dynamics.ts UNIFIED_LIFE / leniaNextQuat と定数一致（color-tuned）。
+  if (P.life > 0.0) {
+    let R = 8;
+    let mu = 0.35; let sigma = 0.12; let off = 0.5; let scl = 0.7;
+    let kr0 = 0.5; let kw = 0.15; let dtL = 0.3;
+    var accW = 0.0;
+    var accU = vec4<f32>(0.0);
+    for (var dy = -R; dy <= R; dy = dy + 1) {
+      for (var dx = -R; dx <= R; dx = dx + 1) {
+        let rr = sqrt(f32(dx*dx + dy*dy)) / f32(R);
+        if (rr > 1.0 || rr == 0.0) { continue; }
+        let wv = bellf(rr, kr0, kw);
+        accW = accW + wv;
+        accU = accU + wv * (at(x + dx, y + dy, L) * scl + off);
+      }
+    }
+    let Pot = accU / accW;                       // 成分ごとの正規化ポテンシャル（shifted frame）
+    let G = vec4<f32>(bellf(Pot.x,mu,sigma), bellf(Pot.y,mu,sigma), bellf(Pot.z,mu,sigma), bellf(Pot.w,mu,sigma));
+    let decayL = exp(-dtL);
+    let u = q * scl + off;
+    let qLenia = (decayL * u + (1.0 - decayL) * G - off) / scl;
+    qOut = mix(qOut, qLenia, P.life);
+  }
+  outBuf[c] = qOut;
 }
 `;
 

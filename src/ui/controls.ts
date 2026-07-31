@@ -46,6 +46,7 @@ export interface ControlCallbacks {
   onMorph: (v: number) => void;
   onPattern: (v: number) => void;
   onWave: (v: number) => void;
+  onLife: (v: number) => void;
   onRecord: (seconds: number, onTick: (remaining: number) => void) => Promise<void>;
   onTogglePause: () => boolean; // 戻り値: 再生中か
 }
@@ -374,6 +375,29 @@ export function buildControls(
       const v = parseFloat(input.value);
       value.textContent = v.toFixed(2);
       cb.onWave(v);
+    });
+    r.appendChild(input);
+    r.appendChild(value);
+    panel.appendChild(r);
+    track(r, (d) => d === "unified");
+  }
+
+  // 統合形（四元数）の局所↔非局所ノブ k（0=局所 ∇²／1=Lenia リング核＝非局所の生命的構造）。
+  // 結合 λ・模様 p・波 a と直交する 4 本目の橋＝空間結合の非局所性・checks/unified-lenia.py。
+  {
+    const { row: r, value } = row("生命");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = "0";
+    input.style.flex = "1";
+    value.textContent = "0.00";
+    input.addEventListener("input", () => {
+      const v = parseFloat(input.value);
+      value.textContent = v.toFixed(2);
+      cb.onLife(v);
     });
     r.appendChild(input);
     r.appendChild(value);

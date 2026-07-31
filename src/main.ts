@@ -134,6 +134,7 @@ async function main(): Promise<void> {
   let morph = 1; // lenia の diffusion↔Lenia 核 morph（1=パターン・0=拡散=均す）
   let pattern = 0; // unified の CGL↔SH パターンノブ p（0=四元数CGL・1=Swift-Hohenberg）
   let wave = 0; // unified の拡散↔波動ノブ a（0=拡散/緩和・→1=波動＝移流に慣性）
+  let life = 0; // unified の局所↔非局所ノブ k（0=局所∇²・→1=Lenia リング核＝生命的非局所構造）
 
   const apply = (): void => engine.setState(params, modeNum(mode), blend, phaseRef);
 
@@ -172,6 +173,7 @@ async function main(): Promise<void> {
       engine.setCoupling(coupling);
       engine.setPattern(pattern);
       engine.setWave(wave);
+      engine.setLife(life);
       engine.resetVel(); // 波動の慣性を 0 から
       engine.seedQuat(q4);
     } else if (dynamics === "chroma") {
@@ -260,6 +262,10 @@ async function main(): Promise<void> {
     onWave: (v) => {
       wave = v;
       engine.setWave(v); // unified の拡散↔波動ノブ
+    },
+    onLife: (v) => {
+      life = v;
+      engine.setLife(v); // unified の局所↔非局所（Lenia）ノブ
     },
     onRecord: (seconds, onTick) => recordCanvas(canvas, seconds, onTick),
     onTogglePause: () => {

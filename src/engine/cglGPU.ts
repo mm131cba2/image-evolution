@@ -58,6 +58,7 @@ export class CGLEngine {
   private morph = 1; // lenia の diffusion↔Lenia 核 morph（1=Lenia パターン・0=拡散=均す）
   private pattern = 0; // 統合形の CGL↔SH パターンノブ（0=四元数CGL・1=Swift-Hohenberg）
   private wave = 0; // 統合形の拡散↔波動ノブ a（0=拡散/緩和=1階・→1=波動=移流に慣性）
+  private life = 0; // 統合形の局所↔非局所ノブ k（0=局所∇²・1=Lenia リング核＝生命的非局所構造）
 
   constructor(
     private device: GPUDevice,
@@ -253,6 +254,11 @@ export class CGLEngine {
     this.wave = a;
   }
 
+  // 統合形（四元数）の局所↔非局所ノブ k（0=局所∇²・1=Lenia リング核＝非局所の生命的構造）。
+  setLife(k: number): void {
+    this.life = k;
+  }
+
   // 統合形の移流速度チャンネルを 0 に（再シード時＝波動の慣性をリセットして決定的に開始）。
   resetVel(): void {
     this.device.queue.writeBuffer(this.qvel, 0, new Float32Array(this.L * this.L * 4));
@@ -280,6 +286,7 @@ export class CGLEngine {
     dv.setFloat32(72, this.morph, true);
     dv.setFloat32(76, this.pattern, true);
     dv.setFloat32(80, this.wave, true);
+    dv.setFloat32(84, this.life, true);
     this.device.queue.writeBuffer(this.paramsBuf, 0, this.paramsHost);
   }
 

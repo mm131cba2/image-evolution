@@ -138,48 +138,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
-// 四元数 CGL（全色発展）。状態 q=vec4(w,x,y,z)。CPU 参照 dynamics.ts quatCglStep と 1:1。
-// I=(1,1,1)/√3（軸）。∂q/∂t = q + (1+bI)D∇²q − (1+cI)|q|²q。
-export const QUAT_STEP_WGSL = /* wgsl */ `
-${PARAMS_STRUCT}
-@group(0) @binding(0) var<storage, read> inBuf: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> outBuf: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> P: Params;
-fn at(x: i32, y: i32, L: i32) -> vec4<f32> {
-  return inBuf[u32(clamp(y, 0, L - 1) * L + clamp(x, 0, L - 1))];
-}
-// 四元数積 a⊗b（a=(aw,ax,ay,az)）。
-fn qmul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
-  return vec4<f32>(
-    a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
-    a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
-    a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
-    a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x,
-  );
-}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let L = i32(P.L);
-  let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= L || y >= L) { return; }
-  let c = u32(y * L + x);
-  let q = inBuf[c];  // (w,x,y,z)
-  let lap = at(x-1,y,L) + at(x+1,y,L) + at(x,y-1,L) + at(x,y+1,L) - 4.0 * q;
-  // coupling λ: 1=完全結合(四元数CGL・色相回転内蔵) .. 0=成分独立(直和ℝ⁴・褪色)。
-  // 回転係数を λ で絞り、ノルムを 共有|q|² ↔ 成分ごとq_k² で補間（checks/color-algebra.py）。
-  let lam = P.coupling;
-  let m2 = dot(q, q);
-  let n2 = mix(q * q, vec4<f32>(m2), lam);   // 成分ごと n²_k = (1-λ)q_k² + λ|q|²
-  let s = 0.57735027; // 1/√3
-  let Ab = vec4<f32>(1.0, lam*P.b*s, lam*P.b*s, lam*P.b*s);
-  let Ac = vec4<f32>(1.0, lam*P.c*s, lam*P.c*s, lam*P.c*s);
-  // qmul は a=(aw,ax,ay,az) 規約。ここでは vec4 の .x=w,.y=x,.z=y,.w=z として扱う。
-  let diff = qmul(Ab, P.D * lap);
-  let nl = qmul(Ac, n2 * q);
-  outBuf[c] = q + P.dt * (q + diff - nl);
-}
-`;
-
 // 統合形（四元数版）。状態 q=vec4(w,x,y,z)＋速度 vel=vec4。CPU 参照 dynamics.ts unifiedQuatStep と 1:1。
 // 3 直交ノブで統合形の 3 軸を 1 場で走査（checks/unified-quat.py・unified-telegraph.py 実証）:
 //   coupling λ=場の代数（scalar ℝ⁴ ↔ quat ℍ）／pattern p=σ(k) ピーク（CGL k=0 ↔ SH 有限 k）／
@@ -282,28 +240,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }
 `;
 
-// 電信方程式（拡散↔波動の統一）。状態 vec2=(u,v)。u_t=v, v_t=c²∇²u−γv。
-// γ→0 で波動（伝播）・γ 大で拡散（その場で広がる）。CPU 参照 waveStep（γ 固定）と同型。
-// c²=D, γ=P.gamma。分数階版は陽的 GL が不安定なので整数階のこれで統一（checks 済み）。
-export const TELEGRAPH_WGSL = /* wgsl */ `
-${PARAMS_STRUCT}
-@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
-@group(0) @binding(2) var<uniform> P: Params;
-fn uAt(x: i32, y: i32, L: i32) -> f32 { return inBuf[u32(clamp(y,0,L-1)*L+clamp(x,0,L-1))].x; }
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= L || y >= L) { return; }
-  let c = u32(y * L + x);
-  let s = inBuf[c]; // (u, v)
-  let lap = uAt(x-1,y,L)+uAt(x+1,y,L)+uAt(x,y-1,L)+uAt(x,y+1,L) - 4.0*s.x;
-  let v = s.y + P.dt * (P.D * lap - P.gamma * s.y);
-  outBuf[c] = vec2<f32>(s.x + P.dt * v, v);
-}
-`;
-
-// 壁(clamp)境界の 13 点 biharmonic ∇⁴u（SH/CH 用）。CPU biharmReflect と一致。
+// 壁(clamp)境界の 13 点 biharmonic ∇⁴u（CH 用）。CPU biharmReflect と一致。
 const BIHARM_WGSL = `
 fn uAt(x: i32, y: i32, L: i32) -> f32 { return inBuf[u32(clamp(y,0,L-1)*L+clamp(x,0,L-1))].x; }
 fn bih(x: i32, y: i32, L: i32) -> f32 {
@@ -314,25 +251,6 @@ fn bih(x: i32, y: i32, L: i32) -> f32 {
 }
 fn lap5(x: i32, y: i32, L: i32) -> f32 {
   return uAt(x-1,y,L)+uAt(x+1,y,L)+uAt(x,y-1,L)+uAt(x,y+1,L) - 4.0*uAt(x,y,L);
-}
-`;
-
-// Swift-Hohenberg（縞・迷路・六方）。状態 re=u。u_t=r·u−u−2∇²u−∇⁴u−u³。checks 済み。
-export const SWIFT_WGSL = /* wgsl */ `
-${PARAMS_STRUCT}
-@group(0) @binding(0) var<storage, read> inBuf: array<vec2<f32>>;
-@group(0) @binding(1) var<storage, read_write> outBuf: array<vec2<f32>>;
-@group(0) @binding(2) var<uniform> P: Params;
-${BIHARM_WGSL}
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let L = i32(P.L); let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= L || y >= L) { return; }
-  let c = u32(y * L + x);
-  let u = inBuf[c].x;
-  let r = 0.5; let dt = 0.02;
-  let un = u + dt * (r*u - u - 2.0*lap5(x,y,L) - bih(x,y,L) - u*u*u);
-  outBuf[c] = vec2<f32>(un, 0.0);
 }
 `;
 
@@ -570,8 +488,8 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     // 色拡散: 発展した (Y,Cb,Cr) をそのまま表示（Y も yrate>0 で発展する）。
     let q = quatField[c];
     outc = clamp(ycbcr2rgb(q.x, q.y, q.z), vec3<f32>(0.0), vec3<f32>(1.0));
-  } else if (P.dynamics == 4u || P.dynamics == 9u) {
-    // 四元数（全色発展）/ 統合（四元数）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
+  } else if (P.dynamics == 9u) {
+    // 統合（四元数）: 純虚部(x,y,z)→OKLab(L,a,b)。共回転で均質スピンを打ち消す。
     var q = quatField[c];
     let s3 = 0.57735027; // 1/√3（軸 I=(1,1,1)/√3）
     // 共回転: exp(phaseRef·I)⊗q で均質左回転を相殺（phaseRef=0 なら回る）。
@@ -589,11 +507,10 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
     let S = 0.14 * taper;
     let lin = oklab2lin(Ld, S * im.y, S * im.z);
     outc = vec3<f32>(lin2srgb1(lin.r), lin2srgb1(lin.g), lin2srgb1(lin.b));
-  } else if (P.dynamics >= 5u) {
-    // 電信/SH/FHN/CH: スカラー場 u=psi.x を写真の色で明暗変調（力学別に正規化）。
+  } else if (P.dynamics >= 7u) {
+    // FHN/CH: スカラー場 u=psi.x を写真の色で明暗変調（力学別に正規化）。
     var fi = 0.5 + 0.5 * psi.x;
-    if (P.dynamics == 5u) { fi = 0.5 + 0.8 * psi.x; }      // telegraph（u は小さめ）
-    else if (P.dynamics == 7u) { fi = 0.5 + 0.3 * psi.x; } // FHN（u は ±2）
+    if (P.dynamics == 7u) { fi = 0.5 + 0.3 * psi.x; } // FHN（u は ±2）
     fi = clamp(fi, 0.0, 1.0);
     outc = clamp(mix(origHere * 0.12, origHere * 1.5, fi), vec3<f32>(0.0), vec3<f32>(1.0));
   } else if (P.mode == 1u) { outc = bcol; }

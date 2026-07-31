@@ -7,11 +7,8 @@ import {
   GRAYSCOTT_WGSL,
   LENIA_WGSL,
   CHROMA_WGSL,
-  QUAT_STEP_WGSL,
   UNIFIED_QUAT_STEP_WGSL,
   QUAT_MEAN_WGSL,
-  TELEGRAPH_WGSL,
-  SWIFT_WGSL,
   FHN_WGSL,
   CAHN_WGSL,
   ADVECT_WGSL,
@@ -23,8 +20,9 @@ import type { CGLParams } from "./params";
 
 const PARAMS_BYTES = 96;
 export type ModeNum = 0 | 1 | 2; // 0=A(flow) 1=B(field) 2=blend
-// 0=cgl 1=grayscott 2=lenia 3=chroma 4=quat 5=telegraph 6=swift 7=fhn 8=cahn 9=unified(quat)
-export type DynNum = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+// 0=cgl 1=grayscott 2=lenia 3=chroma 7=fhn 8=cahn 9=unified(quat)。
+// 4/5/6（旧 quat/telegraph/swift）は unified に統合され欠番。
+export type DynNum = 0 | 1 | 2 | 3 | 7 | 8 | 9;
 
 export class CGLEngine {
   private cur = 0; // psi parity（最新）
@@ -40,7 +38,6 @@ export class CGLEngine {
   private stepPipelines: Record<number, GPUComputePipeline>; // vec2 力学（dynamics 番号→pipeline）
   private qbuf: [GPUBuffer, GPUBuffer]; // vec4 場（chroma=YCbCr / quat）のピンポン
   private chromaPipeline: GPUComputePipeline; // vec4 色拡散
-  private quatPipeline: GPUComputePipeline;
   private unifiedPipeline: GPUComputePipeline; // 統合形（四元数版）・速度チャンネル付き専用レイアウト
   private unifiedBG: [GPUBindGroup, GPUBindGroup];
   private qvel: GPUBuffer; // 統合形の移流速度チャンネル（telegraph・vec4）
@@ -57,8 +54,7 @@ export class CGLEngine {
   private anchor = 0; // 重心アンカー強度（quat・0=自由）
   private m0: [number, number, number] = [0, 0, 0]; // 写真の Im 重心
   private yrate = 0; // chroma の輝度拡散率（0=Y固定=形保持・>0=Yも溶ける）
-  private gamma = 0.05; // telegraph の減衰（0→波動・大→拡散）
-  private coupling = 1; // quat の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
+  private coupling = 1; // unified の代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
   private morph = 1; // lenia の diffusion↔Lenia 核 morph（1=Lenia パターン・0=拡散=均す）
   private pattern = 0; // 統合形の CGL↔SH パターンノブ（0=四元数CGL・1=Swift-Hohenberg）
   private wave = 0; // 統合形の拡散↔波動ノブ a（0=拡散/緩和=1階・→1=波動=移流に慣性）
@@ -124,19 +120,16 @@ export class CGLEngine {
         layout: stepPL,
         compute: { module: device.createShaderModule({ code }), entryPoint: "main" },
       });
-    // vec2 力学（dynamics 番号→pipeline・computeBG を共有）。3/4 は vec4 で別扱い。
+    // vec2 力学（dynamics 番号→pipeline・computeBG を共有）。3/9 は vec4 で別扱い。
     this.stepPipelines = {
       0: mkStep(CGL_STEP_WGSL),
       1: mkStep(GRAYSCOTT_WGSL),
       2: mkStep(LENIA_WGSL),
-      5: mkStep(TELEGRAPH_WGSL),
-      6: mkStep(SWIFT_WGSL),
       7: mkStep(FHN_WGSL),
       8: mkStep(CAHN_WGSL),
     };
-    // vec4 場（chroma=YCbCr / quat）も同じ step レイアウト（storage in/out + uniform）を共有。
+    // vec4 場（chroma=YCbCr / unified）も同じ step レイアウト（storage in/out + uniform）を共有。
     this.chromaPipeline = mkStep(CHROMA_WGSL);
-    this.quatPipeline = mkStep(QUAT_STEP_WGSL);
     this.quatBG = [
       device.createBindGroup({
         layout: stepBGL,
@@ -240,12 +233,7 @@ export class CGLEngine {
     this.yrate = r;
   }
 
-  // telegraph の減衰 γ（0→波動・大→拡散）。拡散↔波動の統一ツマミ。
-  setGamma(g: number): void {
-    this.gamma = g;
-  }
-
-  // quat の代数結合 λ（1=四元数=色相回転内蔵・0=成分独立=直和ℝ⁴で褪色）。scalar↔quat ノブ。
+  // unified の代数結合 λ（1=四元数=色相回転内蔵・0=成分独立=直和ℝ⁴で褪色）。scalar↔quat ノブ。
   setCoupling(l: number): void {
     this.coupling = l;
   }
@@ -288,7 +276,6 @@ export class CGLEngine {
     dv.setFloat32(52, this.m0[1], true);
     dv.setFloat32(56, this.m0[2], true);
     dv.setFloat32(60, this.yrate, true);
-    dv.setFloat32(64, this.gamma, true);
     dv.setFloat32(68, this.coupling, true);
     dv.setFloat32(72, this.morph, true);
     dv.setFloat32(76, this.pattern, true);
@@ -352,11 +339,10 @@ export class CGLEngine {
   }
 
   // 現在の力学を times ステップ進める（ピンポン）。力学は setDynamics で選択。
-  // dynamics 3(chroma)/4(quat)/9(unified) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
+  // dynamics 3(chroma)/9(unified) は vec4 場(qbuf)を、それ以外は vec2 場(buffers)を進める。
   stepCGL(times: number): void {
-    const isVec4 = this.dynamics === 3 || this.dynamics === 4 || this.dynamics === 9;
-    const pipe = this.dynamics === 4 ? this.quatPipeline
-      : this.dynamics === 9 ? this.unifiedPipeline
+    const isVec4 = this.dynamics === 3 || this.dynamics === 9;
+    const pipe = this.dynamics === 9 ? this.unifiedPipeline
       : this.dynamics === 3 ? this.chromaPipeline
       : this.stepPipelines[this.dynamics];
     const bgs = this.dynamics === 9 ? this.unifiedBG : isVec4 ? this.quatBG : this.computeBG;

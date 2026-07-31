@@ -28,8 +28,7 @@ function modeNum(m: Mode): ModeNum {
 
 function dynNum(d: Dynamics): DynNum {
   const map: Record<Dynamics, DynNum> = {
-    cgl: 0, grayscott: 1, lenia: 2, chroma: 3, quat: 4, scalar: 4, unified: 9,
-    telegraph: 5, swifthohenberg: 6, fitzhugh: 7, cahnhilliard: 8,
+    cgl: 0, grayscott: 1, lenia: 2, chroma: 3, unified: 9, fitzhugh: 7, cahnhilliard: 8,
   };
   return map[d];
 }
@@ -131,8 +130,7 @@ async function main(): Promise<void> {
   let anchorStrength = 0.6; // quat「元の色味を保つ」既定（0=自由発展・1=完全に元の重心）
   let quatM0: [number, number, number] = [0, 0, 0]; // 写真の色重心（seed 時に算出）
   let chromaYRate = 0.4; // chroma 輝度拡散率（0=Y固定=形保持・>0=形も溶ける）
-  let gamma = 0.05; // telegraph 減衰（拡散↔波動の統一ツマミ・小=波動）
-  let coupling = 1; // quat 代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
+  let coupling = 1; // unified 代数結合 λ（1=四元数=色相回転・0=成分独立=褪色）
   let morph = 1; // lenia の diffusion↔Lenia 核 morph（1=パターン・0=拡散=均す）
   let pattern = 0; // unified の CGL↔SH パターンノブ p（0=四元数CGL・1=Swift-Hohenberg）
   let wave = 0; // unified の拡散↔波動ノブ a（0=拡散/緩和・→1=波動＝移流に慣性）
@@ -161,10 +159,9 @@ async function main(): Promise<void> {
     engine.seedOriginal(f.orig);
     if (dynamics === "cgl") {
       engine.seed(f.psiRe, f.psiIm);
-    } else if (dynamics === "quat" || dynamics === "scalar" || dynamics === "unified") {
-      // scalar＝quat の coupling=0 極限＝色の各成分が独立な実 Stuart-Landau 場（ℝ⊕ℝ⊕ℝ⊕ℝ・
-      // 混ざらない・独立拡散で褪色）。unified＝統合形（四元数・CGL↔SH パターン）。いずれも quat の
-      // vec4 場/表示/重心アンカーを共有し、結合 λ とパターン p だけ差し替える（checks/*）。
+    } else if (dynamics === "unified") {
+      // 統合形（四元数）：結合 λ×模様 p×波 a の 3 直交ノブで統合形の 3 軸を 1 場で走査
+      // （旧 quat=λ1,p0,a0 ／ scalar=λ0 ／ SH=p1 ／ 電信=a>0 を包含）。vec4 場/表示/重心アンカー共有。
       const q4 = seedQuat(f.orig, L);
       // 写真の色重心 m0（純虚部 Im の平均）。表示の再センタの基準。
       let mx = 0, my = 0, mz = 0;
@@ -172,10 +169,10 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) { mx += q4[i * 4 + 1]; my += q4[i * 4 + 2]; mz += q4[i * 4 + 3]; }
       quatM0 = [mx / n, my / n, mz / n];
       engine.setQuatAnchor(anchorStrength, quatM0);
-      engine.setCoupling(dynamics === "scalar" ? 0 : coupling); // scalar は結合ゼロ＝成分独立
-      engine.setPattern(dynamics === "unified" ? pattern : 0);  // pattern は unified のみ
-      engine.setWave(dynamics === "unified" ? wave : 0);        // wave も unified のみ
-      if (dynamics === "unified") engine.resetVel();            // 波動の慣性を 0 から
+      engine.setCoupling(coupling);
+      engine.setPattern(pattern);
+      engine.setWave(wave);
+      engine.resetVel(); // 波動の慣性を 0 から
       engine.seedQuat(q4);
     } else if (dynamics === "chroma") {
       engine.setChromaYRate(chromaYRate);
@@ -185,11 +182,8 @@ async function main(): Promise<void> {
       const s =
         dynamics === "grayscott" ? seedGrayScott(f.orig, L)
         : dynamics === "lenia" ? seedLenia(f.orig, L)
-        : dynamics === "telegraph" ? seedScalar(f.orig, L, 1.0)
-        : dynamics === "swifthohenberg" ? seedScalar(f.orig, L, 0.2)
         : dynamics === "fitzhugh" ? seedScalar(f.orig, L, 2.0)
         : seedScalar(f.orig, L, 0.4); // cahnhilliard
-      if (dynamics === "telegraph") engine.setGamma(gamma);
       if (dynamics === "lenia") engine.setMorph(morph);
       engine.seed(s.re, s.im);
     }
@@ -251,10 +245,6 @@ async function main(): Promise<void> {
       chromaYRate = v;
       engine.setChromaYRate(v); // chroma の輝度拡散率
     },
-    onGamma: (v) => {
-      gamma = v;
-      engine.setGamma(v); // telegraph の拡散↔波動
-    },
     onCoupling: (v) => {
       coupling = v;
       engine.setCoupling(v); // quat の scalar↔quat 代数結合
@@ -287,7 +277,7 @@ async function main(): Promise<void> {
   // chroma=拡散が遅く見えるので多め／grayscott=見やすくやや少なめ）。
   const stepsFor = (d: Dynamics): number =>
     d === "lenia" ? 2 : d === "chroma" ? 20 : d === "grayscott" ? 3
-    : d === "fitzhugh" ? 3 : d === "cahnhilliard" ? 8 : 6; // telegraph/swift/quat/cgl=6
+    : d === "fitzhugh" ? 3 : d === "cahnhilliard" ? 8 : 6; // unified/cgl=6
   let acc = 0;
   let last = performance.now();
   const advance = (): void => {
@@ -312,7 +302,7 @@ async function main(): Promise<void> {
       if (iters === MAX_CATCHUP) acc = 0; // 追いつけない時は積み残しを捨てる
     }
     engine.setState(params, modeNum(mode), blend, phaseRef);
-    if (dynamics === "quat" || dynamics === "scalar" || dynamics === "unified") engine.computeQuatMean(); // 重心を更新してから描画
+    if (dynamics === "unified") engine.computeQuatMean(); // 重心を更新してから描画
     engine.render(gpu.context);
     requestAnimationFrame(loop);
   };

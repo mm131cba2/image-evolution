@@ -5,8 +5,6 @@ import {
   chromaStep,
   quatCglStep,
   unifiedQuatStep,
-  waveStep,
-  swiftHohenbergStep,
   fitzHughNagumoStep,
   cahnHilliardStep,
   rgbToYCbCr,
@@ -247,28 +245,6 @@ const std = (a: Float32Array): number => {
   return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length);
 };
 
-describe("waveStep（波動）", () => {
-  it("有界に伝播（発散しない）", () => {
-    const L = 24;
-    const { re, im } = photoField(L);
-    for (let s = 0; s < 500; s++) waveStep(re, im, L);
-    expect(bounded(re, 3)).toBe(true);
-    expect(std(re)).toBeGreaterThan(0); // 波が立っている
-  });
-});
-
-describe("swiftHohenbergStep（縞）", () => {
-  it("有界・パターンに自己組織化（分散が育つ）", () => {
-    const L = 32;
-    const { re, im } = photoField(L);
-    for (let i = 0; i < re.length; i++) re[i] *= 0.2;
-    for (let s = 0; s < 2000; s++) swiftHohenbergStep(re, im, L);
-    expect(bounded(re, 2)).toBe(true);
-    expect(std(re)).toBeGreaterThan(0.2); // ±1 縞へ
-    expect(im.every((v) => v === 0)).toBe(true);
-  });
-});
-
 describe("fitzHughNagumoStep（興奮性）", () => {
   it("有界（発散しない）", () => {
     const L = 24;
@@ -326,7 +302,7 @@ describe("unifiedQuatStep（統合形・四元数・CGL↔SH の 1 場実装）"
       leak = Math.max(leak, Math.abs(q[i * 4 + 1]), Math.abs(q[i * 4 + 2]), Math.abs(q[i * 4 + 3]));
     }
     expect(bounded(w, 2)).toBe(true);    // 発散しない
-    expect(std(w)).toBeGreaterThan(0.2); // 有限 k の縞へ自己組織化（swiftHohenbergStep と同型）
+    expect(std(w)).toBeGreaterThan(0.2); // 有限 k の縞へ自己組織化（Swift-Hohenberg と同型）
     expect(leak).toBeLessThan(1e-6);     // λ=0＝他成分へ漏れない（ℝ⁴ 独立）
   });
 

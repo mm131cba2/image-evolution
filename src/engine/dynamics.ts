@@ -260,41 +260,6 @@ function biharmReflect(f: Float32Array, L: number, out: Float32Array): void {
 }
 
 // ---------------------------------------------------------------------------
-// 波動方程式（減衰つき）。状態 re=u（変位）, im=v（速度）。写真=初期変位で波紋が伝播。
-// u_t = v,  v_t = c²∇²u − γv。checks 済み: 有界に鳴って徐々に静まる。
-// ---------------------------------------------------------------------------
-export const WAVE = { c2: 0.2, g: 0.004, dt: 0.2 } as const;
-export function waveStep(re: Float32Array, im: Float32Array, L: number): void {
-  const n = L * L;
-  const lu = new Float32Array(n);
-  lapReflect(re, L, lu);
-  const { c2, g, dt } = WAVE;
-  for (let i = 0; i < n; i++) {
-    im[i] = im[i] + dt * (c2 * lu[i] - g * im[i]);
-    re[i] = re[i] + dt * im[i];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Swift-Hohenberg（縞・迷路・六方）。状態 re=u（im 未使用）。選択波長でパターン形成。
-// u_t = (r − (1+∇²)²)u − u³ = r·u − u − 2∇²u − ∇⁴u − u³。checks 済み: ±1 縞に自己組織化。
-// ---------------------------------------------------------------------------
-export const SH = { r: 0.5, dt: 0.02 } as const;
-export function swiftHohenbergStep(re: Float32Array, im: Float32Array, L: number): void {
-  const n = L * L;
-  const lu = new Float32Array(n);
-  const b4 = new Float32Array(n);
-  lapReflect(re, L, lu);
-  biharmReflect(re, L, b4);
-  const { r, dt } = SH;
-  for (let i = 0; i < n; i++) {
-    const u = re[i];
-    re[i] = u + dt * (r * u - u - 2 * lu[i] - b4[i] - u * u * u);
-  }
-  im.fill(0);
-}
-
-// ---------------------------------------------------------------------------
 // FitzHugh-Nagumo（興奮性・伝播波）。状態 re=u, im=v。振動域で伝播する波。
 // u_t = u − u³/3 − v + D∇²u,  v_t = ε(u + a − b·v)。checks 済み: 伝播波（のち同期）。
 // ---------------------------------------------------------------------------

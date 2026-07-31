@@ -42,7 +42,6 @@ export interface ControlCallbacks {
   onCoRotate: (on: boolean) => void;
   onAnchor: (v: number) => void;
   onYRate: (v: number) => void;
-  onGamma: (v: number) => void;
   onCoupling: (v: number) => void;
   onMorph: (v: number) => void;
   onPattern: (v: number) => void;
@@ -112,9 +111,9 @@ export function buildControls(
     for (const t of tracked) t.el.style.display = t.show(curDyn, curMode) ? t.shown : "none";
   };
   const isCgl = (d: Dynamics): boolean => d === "cgl";
-  const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "quat" || d === "unified"; // b,c を使う
+  const usesBC = (d: Dynamics): boolean => d === "cgl" || d === "unified"; // b,c を使う
   const usesDiff = (d: Dynamics): boolean =>
-    d === "cgl" || d === "chroma" || d === "quat" || d === "scalar" || d === "unified"; // D,dt
+    d === "cgl" || d === "chroma" || d === "unified"; // D,dt
 
   // 力学エンジン選択（最上位・常時）。
   const dynRow = document.createElement("div");
@@ -125,11 +124,7 @@ export function buildControls(
     ["grayscott", "力学: 反応拡散（Turing斑点）"],
     ["lenia", "力学: Lenia（連続ライフ）"],
     ["chroma", "力学: 色拡散（YCbCr）"],
-    ["quat", "力学: 四元数（全色発展）"],
-    ["scalar", "力学: 実数スカラー（全色・独立）"],
-    ["unified", "力学: 統一（四元数・CGL↔パターン）"],
-    ["telegraph", "力学: 電信方程式（拡散↔波動）"],
-    ["swifthohenberg", "力学: Swift-Hohenberg（縞）"],
+    ["unified", "力学: 統一（四元数・結合λ×模様p×波a）"],
     ["fitzhugh", "力学: FitzHugh-Nagumo（興奮性）"],
     ["cahnhilliard", "力学: Cahn-Hilliard（相分離）"],
   ] as const) {
@@ -153,8 +148,7 @@ export function buildControls(
   hint.textContent = "このモードは調整項目がありません（固定パラメータ）";
   panel.appendChild(hint);
   const fixedParamDyn = (d: Dynamics): boolean =>
-    d === "grayscott" || d === "lenia" || d === "swifthohenberg" ||
-    d === "fitzhugh" || d === "cahnhilliard";
+    d === "grayscott" || d === "lenia" || d === "fitzhugh" || d === "cahnhilliard";
   track(hint, fixedParamDyn);
 
   // モード選択（cgl のみ・A=写真を流す / B=場を表示 / blend=混合）。
@@ -315,11 +309,10 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
-    track(r, (d) => d === "quat" || d === "scalar" || d === "unified"); // 元色アンカーは quat/scalar/unified 共通
+    track(r, (d) => d === "unified"); // 元色アンカーは unified の色重心引き戻し
   }
 
-  // 四元数モードの代数結合 λ（1=四元数=色相回転・彩度保持／0=成分独立=褪色）。scalar↔quat ノブ。
-  // unified でも同じ λ 軸（ℝ⁴↔ℍ）が効く。
+  // unified の代数結合 λ（1=四元数=色相回転・彩度保持／0=成分独立=褪色）。ℝ⁴↔ℍ ノブ。
   {
     const { row: r, value } = row("結合");
     const input = document.createElement("input");
@@ -338,7 +331,7 @@ export function buildControls(
     r.appendChild(input);
     r.appendChild(value);
     panel.appendChild(r);
-    track(r, (d) => d === "quat" || d === "unified");
+    track(r, (d) => d === "unified");
   }
 
   // 統合形（四元数）の CGL↔SH パターンノブ p（0=四元数CGL＝k=0 リミットサイクル・
@@ -408,29 +401,6 @@ export function buildControls(
     r.appendChild(value);
     panel.appendChild(r);
     track(r, (d) => d === "chroma");
-  }
-
-  // 電信方程式の減衰 γ（対数・小=波動 / 大=拡散）。拡散↔波動の統一ツマミ。
-  {
-    const [lo, hi] = [0.002, 3];
-    const { row: r, value } = row("減衰");
-    const input = document.createElement("input");
-    input.type = "range";
-    input.min = "0";
-    input.max = "1";
-    input.step = "0.001";
-    input.value = String(logScaleInv(0.05, lo, hi));
-    input.style.flex = "1";
-    value.textContent = "0.05";
-    input.addEventListener("input", () => {
-      const g = logScale(parseFloat(input.value), lo, hi);
-      value.textContent = g.toFixed(3);
-      cb.onGamma(g);
-    });
-    r.appendChild(input);
-    r.appendChild(value);
-    panel.appendChild(r);
-    track(r, (d) => d === "telegraph");
   }
 
   // Lenia の diffusion↔Lenia 核 morph λ（0=拡散=均す／1=Lenia=生命的パターン・λ_c≈0.6 で分岐）。
